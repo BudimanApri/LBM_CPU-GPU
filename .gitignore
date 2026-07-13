@@ -3,3 +3,5 @@ dist
 src/gpu/shaders/generated
 *.tsbuildinfo
 .vite
+tests/__screenshots__
+.vitest-attachments

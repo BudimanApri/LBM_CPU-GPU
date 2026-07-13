@@ -12,6 +12,7 @@ describe('generateD2Q9Wgsl', () => {
     ['D2Q9_CX', 'i32'],
     ['D2Q9_CY', 'i32'],
     ['D2Q9_OPP', 'i32'],
+    ['D2Q9_SPEC', 'i32'],
     ['D2Q9_W', 'f32'],
   ])('declares %s as a well-formed array<%s, 9> with 9 elements', (name, type) => {
     const re = new RegExp(`const ${name}: array<${type}, 9> = array<${type}, 9>\\(([^)]+)\\);`);

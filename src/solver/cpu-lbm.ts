@@ -267,9 +267,14 @@ export class CpuLbm {
           }
           const target = yd * nx + xd;
           if (mask[target]! !== 0) {
-            // Halfway bounce-back off an obstacle: reflect into the source
-            // cell's opposite direction (gotcha #3, push-scheme mirror).
-            fNext[OPPOSITE[dir]! * n + cell] = value;
+            // Halfway bounce-back off an obstacle: fully reverse the
+            // ORIGINAL direction back into the source cell (gotcha #3,
+            // push-scheme mirror). Using the original i (not the free-slip
+            // reflected dir) matters when a wall-touching solid blocks the
+            // specular path: reversing dir instead would double-write the
+            // slot another neighbor streams into and leave i's own
+            // opposite slot stale -- a mass leak.
+            fNext[OPPOSITE[i]! * n + cell] = value;
             continue;
           }
           fNext[dir * n + target] = value;

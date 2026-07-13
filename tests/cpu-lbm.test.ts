@@ -39,6 +39,31 @@ describe('conservation in a periodic box', () => {
     expect(Math.abs(p1.py - p0.py) / Math.abs(p0.px)).toBeLessThan(1e-10);
   });
 
+  it('conserves mass with solids touching a free-slip wall', () => {
+    // Exercises the blocked-specular corner links: a population whose
+    // free-slip reflection lands in a solid cell must fully reverse into
+    // its own cell (opp of the ORIGINAL direction). Getting this wrong
+    // double-writes one slot and leaves another stale, leaking mass.
+    const nx = 32;
+    const ny = 16;
+    const lbm = new CpuLbm({ nx, ny, tau: 0.7, xBoundary: 'periodic', yBoundary: 'free-slip' });
+    // Block touching the bottom wall, block touching the top wall.
+    for (let y = 0; y <= 3; y++) {
+      for (let x = 10; x <= 14; x++) lbm.mask[y * nx + x] = 1;
+    }
+    for (let y = ny - 4; y < ny; y++) {
+      for (let x = 20; x <= 24; x++) lbm.mask[y * nx + x] = 1;
+    }
+    // Single-cell solids at each wall: their diagonal neighbors are fluid,
+    // which is exactly the double-write configuration.
+    lbm.mask[0 * nx + 5] = 1;
+    lbm.mask[(ny - 1) * nx + 27] = 1;
+    lbm.initUniformEquilibrium(1, 0.05, 0.01);
+    const m0 = lbm.totalMass();
+    lbm.step(400);
+    expect(Math.abs(lbm.totalMass() - m0) / m0).toBeLessThan(1e-10);
+  });
+
   it('conserves mass with a bounce-back obstacle in the box', () => {
     const nx = 64;
     const ny = 64;

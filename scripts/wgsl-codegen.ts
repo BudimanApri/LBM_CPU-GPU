@@ -1,4 +1,4 @@
-import { CX, CY, WEIGHTS, OPPOSITE, Q } from '../src/solver/constants.ts';
+import { CX, CY, WEIGHTS, OPPOSITE, SPECULAR_Y, Q } from '../src/solver/constants.ts';
 
 function i32Array(name: string, values: readonly number[]): string {
   return `const ${name}: array<i32, ${values.length}> = array<i32, ${values.length}>(${values.join(', ')});`;
@@ -17,6 +17,7 @@ export function generateD2Q9Wgsl(): string {
     i32Array('D2Q9_CY', CY),
     f32Array('D2Q9_W', WEIGHTS),
     i32Array('D2Q9_OPP', OPPOSITE),
+    i32Array('D2Q9_SPEC', SPECULAR_Y),
     '',
   ].join('\n');
 }
