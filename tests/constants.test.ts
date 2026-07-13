@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CX, CY, OPPOSITE, Q, WEIGHTS, CS2 } from '../src/solver/constants.ts';
+import { CX, CY, OPPOSITE, Q, SPECULAR_Y, WEIGHTS, CS2 } from '../src/solver/constants.ts';
 
 describe('D2Q9 constants', () => {
   it('has 9 discrete velocities', () => {
@@ -42,5 +42,15 @@ describe('D2Q9 constants', () => {
 
   it('lattice speed of sound squared is 1/3', () => {
     expect(CS2).toBeCloseTo(1 / 3, 15);
+  });
+
+  it('SPECULAR_Y is an involution that preserves cx and flips cy', () => {
+    expect(SPECULAR_Y).toHaveLength(9);
+    for (let i = 0; i < Q; i++) {
+      const s = SPECULAR_Y[i]!;
+      expect(SPECULAR_Y[s]).toBe(i);
+      expect(CX[s] === CX[i]!).toBe(true);
+      expect(CY[s] === -CY[i]!).toBe(true);
+    }
   });
 });
