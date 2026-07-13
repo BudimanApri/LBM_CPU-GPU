@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LBM Wind Tunnel</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="gpu-canvas"></canvas>
+    <div id="webgpu-fallback" class="hidden">
+      <h1>WebGPU is required</h1>
+      <p>This wind tunnel needs WebGPU, which your browser doesn't currently expose.</p>
+      <ul>
+        <li>Chrome or Edge: update to the latest stable version.</li>
+        <li>Safari: version 18 or later.</li>
+        <li>Firefox: enable <code>dom.webgpu.enabled</code> in <code>about:config</code>.</li>
+      </ul>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

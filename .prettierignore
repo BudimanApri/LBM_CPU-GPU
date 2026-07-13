@@ -1,0 +1,6 @@
+dist
+node_modules
+src/gpu/shaders/generated
+*.wgsl
+package-lock.json
+CLAUDE.md
