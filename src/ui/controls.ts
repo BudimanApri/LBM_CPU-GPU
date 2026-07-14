@@ -2,6 +2,7 @@
 // mutates the shared ControlsState and pokes the handlers; main.ts owns all
 // simulation consequences.
 import type { ViewMode } from '../gpu/buffers.ts';
+import { LATTICE_RESOLUTIONS, type LatticeResolution } from '../gpu/resolution.ts';
 
 export type PresetKind = 'cylinder' | 'airfoil' | 'plate-normal' | 'plate-inclined' | 'step';
 
@@ -12,11 +13,14 @@ export interface ControlsState {
   brushRadius: number;
   brushErase: boolean;
   cylinderDiameter: number;
+  cylinderDiameterMax: number;
   nacaDigits: string;
   nacaAlphaDeg: number;
   viewMode: ViewMode;
   dyeEnabled: boolean;
   particlesEnabled: boolean;
+  resolution: LatticeResolution;
+  supportedResolutions: readonly LatticeResolution[];
 }
 
 export interface ControlsHandlers {
@@ -27,6 +31,7 @@ export interface ControlsHandlers {
   onResetFlow: () => void;
   onPauseToggle: () => boolean;
   onSingleStep: () => void;
+  onResolutionChange: (resolution: LatticeResolution) => void;
 }
 
 export interface ControlsApi {
@@ -146,7 +151,7 @@ export function buildControls(
   button(presets, 'Step', () => {
     handlers.onPreset('step');
   });
-  slider(root, 'Cyl. dia.', 8, 64, 2, state.cylinderDiameter, (v) => {
+  slider(root, 'Cyl. dia.', 8, state.cylinderDiameterMax, 2, state.cylinderDiameter, (v) => {
     state.cylinderDiameter = v;
     handlers.onPreset('cylinder');
   });
@@ -235,6 +240,20 @@ export function buildControls(
   const run = row(root, '');
   run.className = 'ctl-section';
   run.textContent = 'RUN';
+  const resolutionRow = row(root, 'Resolution');
+  const resolutionSelect = document.createElement('select');
+  for (const value of LATTICE_RESOLUTIONS) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value;
+    opt.disabled = !state.supportedResolutions.includes(value);
+    resolutionSelect.appendChild(opt);
+  }
+  resolutionSelect.value = state.resolution;
+  resolutionSelect.addEventListener('change', () => {
+    handlers.onResolutionChange(resolutionSelect.value as LatticeResolution);
+  });
+  resolutionRow.appendChild(resolutionSelect);
   const runRow = row(root, '');
   runRow.className = 'ctl-buttons';
   const pauseBtn = button(runRow, 'Pause', () => {

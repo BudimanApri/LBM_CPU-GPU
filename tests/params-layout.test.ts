@@ -3,6 +3,7 @@ import {
   BRUSH_PARAMS_BYTE_SIZE,
   BRUSH_PARAMS_OFFSETS,
   FLAG_DYE_ENABLED,
+  FLAG_LES_ENABLED,
   FLAG_PERIODIC_Y,
   PARAMS_BYTE_SIZE,
   PARAMS_OFFSETS,
@@ -30,6 +31,7 @@ describe('Params uniform layout', () => {
       flags: 16,
       stepIndex: 20,
       substeps: 24,
+      smagorinskyCs: 28,
     });
   });
 
@@ -44,6 +46,8 @@ describe('Params uniform layout', () => {
       viewMode: 'vorticity',
       stepIndex: 7,
       substeps: 5,
+      lesEnabled: true,
+      smagorinskyCs: 0.12,
     });
     expect(buf.byteLength).toBe(PARAMS_BYTE_SIZE);
     const dv = new DataView(buf);
@@ -54,11 +58,11 @@ describe('Params uniform layout', () => {
     const flags = dv.getUint32(PARAMS_OFFSETS.flags, true);
     expect(flags & FLAG_PERIODIC_Y).toBe(FLAG_PERIODIC_Y);
     expect(flags & FLAG_DYE_ENABLED).toBe(FLAG_DYE_ENABLED);
+    expect(flags & FLAG_LES_ENABLED).toBe(FLAG_LES_ENABLED);
     expect((flags >> VIEW_MODE_SHIFT) & VIEW_MODE_MASK).toBe(1); // vorticity = 1
     expect(dv.getUint32(PARAMS_OFFSETS.stepIndex, true)).toBe(7);
     expect(dv.getUint32(PARAMS_OFFSETS.substeps, true)).toBe(5);
-    // Trailing padding stays zeroed.
-    expect(dv.getUint32(28, true)).toBe(0);
+    expect(dv.getFloat32(PARAMS_OFFSETS.smagorinskyCs, true)).toBeCloseTo(0.12);
   });
 
   it('clears the periodic/dye flags for free-slip, dye-off, velocity view', () => {
@@ -76,6 +80,7 @@ describe('Params uniform layout', () => {
       }),
     );
     expect(dv.getUint32(PARAMS_OFFSETS.flags, true)).toBe(0);
+    expect(dv.getFloat32(PARAMS_OFFSETS.smagorinskyCs, true)).toBeCloseTo(0.1);
   });
 
   it.each([

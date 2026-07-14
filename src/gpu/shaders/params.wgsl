@@ -13,10 +13,11 @@ struct Params {
   substeps: u32,   // solver steps per rendered frame (K) -- the dye and
                    // particle passes run once per frame and scale their
                    // advection by K to stay synchronized with the flow
-  _pad1: u32,
+  smagorinsky_cs: f32,
 }
 
 const FLAG_PERIODIC_Y: u32 = 1u;
 const FLAG_DYE_ENABLED: u32 = 2u;
+const FLAG_LES_ENABLED: u32 = 4u;
 const VIEW_MODE_SHIFT: u32 = 4u;
 const VIEW_MODE_MASK: u32 = 3u;

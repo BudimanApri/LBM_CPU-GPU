@@ -19,6 +19,10 @@ export interface HudStats {
   cl: number;
   /** Strouhal number once a stable Cl oscillation is detected, else null. */
   st: number | null;
+  resolution: string;
+  workgroup: string;
+  lesEnabled: boolean;
+  nanDetected: boolean;
 }
 
 export function formatHud(s: HudStats): string {
@@ -30,6 +34,8 @@ export function formatHud(s: HudStats): string {
     `fps    ${s.fps.toFixed(0)}`,
     `MLUPS  ${s.mlups.toFixed(0)}`,
     `K      ${s.kSubsteps}`,
+    `grid   ${s.resolution}  wg ${s.workgroup}`,
+    `LES    ${s.lesEnabled ? 'on' : 'off'}`,
     `Re     ${s.re}${eff}`,
     `tau    ${s.tau.toFixed(4)}`,
     `D      ${s.d} cells (${s.presetLabel})`,
@@ -37,5 +43,6 @@ export function formatHud(s: HudStats): string {
     `Cl     ${s.cl.toFixed(3)}`,
     `St     ${s.st !== null ? s.st.toFixed(3) : '--'}`,
     `steps  ${s.steps}`,
+    ...(s.nanDetected ? ['ERROR  non-finite density; paused'] : []),
   ].join('\n');
 }

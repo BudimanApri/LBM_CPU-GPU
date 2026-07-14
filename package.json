@@ -13,7 +13,8 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc",
-    "gen:wgsl": "node scripts/gen-wgsl-constants.ts"
+    "gen:wgsl": "node scripts/gen-wgsl-constants.ts",
+    "validate:phase6": "node scripts/phase6-browser-gate.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

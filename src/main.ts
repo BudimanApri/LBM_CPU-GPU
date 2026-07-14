@@ -14,11 +14,20 @@ import {
   createBrushPipelines,
   createDyePipeline,
   createForcePipelines,
-  createLbmPipeline,
   createParticlePipelines,
   createRenderPipeline,
+  createSentinelPipeline,
+  benchmarkLbmWorkgroups,
 } from './gpu/pipelines.ts';
 import { clampU, solveTauForRe, type TauSolution } from './solver/units.ts';
+import { AdaptiveKController } from './solver/adaptive-k.ts';
+import {
+  DEFAULT_RESOLUTION,
+  requestedResolution,
+  resolutionDimensions,
+  supportedResolutions,
+  type LatticeResolution,
+} from './gpu/resolution.ts';
 import {
   backwardStepPreset,
   cylinderPreset,
@@ -32,20 +41,21 @@ import { buildControls, type ControlsState, type PresetKind } from './ui/control
 import { formatHud } from './ui/hud.ts';
 import { createStripChart } from './ui/chart.ts';
 
-// Lattice resolution: 1024x512, matching the Phase 4 gate configuration
-// (60fps at K=2) directly rather than testing it separately. The
-// 512x256/2048x1024 selector arrives with the Phase 6 performance work.
-// Keep the CSS aspect-ratio of #gpu-canvas in sync (2 / 1).
-const NX = 1024;
-const NY = 512;
+// Resolution changes are rare and intentionally reload the app so all GPU
+// buffers/bind groups are rebuilt exactly once. The query string makes the
+// selected mode bookmarkable and keeps the hot frame loop allocation-free.
+const RESOLUTION = requestedResolution(window.location.search);
+const { nx: NX, ny: NY } = resolutionDimensions(RESOLUTION);
 const K_MIN = 1;
 const K_MAX = 8;
 const K_DEFAULT = 3;
 const TARGET_FRAME_MS = 1000 / 60;
 
-const CYLINDER_DIAMETER_DEFAULT = 48;
-const PLATE_HEIGHT = 96;
-const PLATE_LENGTH = 128;
+const RESOLUTION_SCALE = NX / 1024;
+const CYLINDER_DIAMETER_DEFAULT = Math.round(48 * RESOLUTION_SCALE);
+const CYLINDER_DIAMETER_MAX = Math.round(NY / 8);
+const PLATE_HEIGHT = Math.round((3 * NY) / 16);
+const PLATE_LENGTH = Math.round(NX / 8);
 const PLATE_ANGLE_DEG = 30;
 const STEP_HEIGHT = Math.round(NY / 3);
 const BRUSH_RADIUS_DEFAULT = 12;
@@ -55,6 +65,8 @@ const FORCE_READBACK_INTERVAL = 10;
 // Debounce for the mask -> D (frontal height) readback during a brush drag;
 // finalized immediately on pointerup. Presets/clear supply D directly.
 const MASK_D_DEBOUNCE_MS = 100;
+const LES_AUTO_RE = 2000;
+const SMAGORINSKY_CS = 0.1;
 
 function showFallback(): void {
   document.getElementById('webgpu-fallback')?.classList.remove('hidden');
@@ -85,12 +97,52 @@ async function main(): Promise<void> {
   const { device, context, format } = gpu;
   observeCanvasResize(canvas, device);
 
+  const availableResolutions = supportedResolutions(device);
+  if (!availableResolutions.includes(RESOLUTION)) {
+    const fallback = availableResolutions.includes(DEFAULT_RESOLUTION)
+      ? DEFAULT_RESOLUTION
+      : availableResolutions.at(-1);
+    if (!fallback) throw new Error('WebGPU device cannot allocate even the 512x256 lattice');
+    console.warn(`${RESOLUTION} exceeds this device's storage-buffer limits; using ${fallback}`);
+    const url = new URL(window.location.href);
+    url.searchParams.set('resolution', fallback);
+    window.location.replace(url);
+    return;
+  }
+
   const buffers: LbmBuffers = createLbmBuffers(device, NX, NY);
-  const lbm = createLbmPipeline(device, buffers);
+  // Seed a valid uniform-flow workload before benchmarking. Each candidate
+  // runs actual completed GPU work; the selected pipeline is retained and
+  // the simulation is reset to the cylinder state below.
+  writeParams(device, buffers, {
+    nx: NX,
+    ny: NY,
+    tau: 0.6,
+    inletU: 0.05,
+    periodicY: false,
+    dyeEnabled: false,
+    viewMode: 'vorticity',
+    stepIndex: 0,
+    substeps: K_DEFAULT,
+    lesEnabled: false,
+    smagorinskyCs: SMAGORINSKY_CS,
+  });
+  writeMask(device, buffers, new Uint8Array(buffers.n), true);
+  writeUniformEquilibrium(device, buffers, 0, 1, 0.05, 0);
+  const lbmBenchmark = await benchmarkLbmWorkgroups(device, buffers);
+  const lbm = lbmBenchmark.selected;
+  console.table(
+    lbmBenchmark.results.map((result) => ({
+      workgroup: result.workgroup.label,
+      msPerStep: result.millisecondsPerStep.toFixed(3),
+      MLUPS: result.mlups.toFixed(0),
+    })),
+  );
   const brush = createBrushPipelines(device, buffers);
   const dye = createDyePipeline(device, buffers);
   const particles = createParticlePipelines(device, buffers, format);
   const forces = createForcePipelines(device, buffers);
+  const sentinel = createSentinelPipeline(device, buffers);
   const render = createRenderPipeline(device, buffers, format);
   seedParticlesRandom(device, buffers);
 
@@ -98,6 +150,11 @@ async function main(): Promise<void> {
   const forceStaging = device.createBuffer({
     label: 'force-staging',
     size: 8,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const sentinelStaging = device.createBuffer({
+    label: 'nan-sentinel-staging',
+    size: 4,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
 
@@ -116,23 +173,33 @@ async function main(): Promise<void> {
     brushRadius: BRUSH_RADIUS_DEFAULT,
     brushErase: false,
     cylinderDiameter: CYLINDER_DIAMETER_DEFAULT,
+    cylinderDiameterMax: CYLINDER_DIAMETER_MAX,
     nacaDigits: '4412',
     nacaAlphaDeg: 0,
     viewMode: 'vorticity',
     dyeEnabled: false,
     particlesEnabled: true,
+    resolution: RESOLUTION,
+    supportedResolutions: availableResolutions,
   };
   let stepCount = 0; // parity: f[stepCount % 2] holds the current state
   let dyeStepCount = 0; // parity: dye[dyeStepCount % 2] holds the current state
   let paused = false;
   let stepOnce = false;
   let currentK = K_DEFAULT; // solver substeps per frame, adapted in frame()
+  const adaptiveK = new AdaptiveKController(K_MIN, K_MAX, TARGET_FRAME_MS, currentK);
+  let adaptiveKEnabled = true;
   let currentD = state.cylinderDiameter;
   let obstacleLabel = 'cylinder'; // HUD tag; 'brush' once hand-painted
   let tauSolution: TauSolution = solveTauForRe(state.re, state.u, currentD);
   // Force instrumentation state.
   let frameCounter = 0;
   let forceReadbackInFlight = false;
+  let sentinelReadbackInFlight = false;
+  let nanDetected = false;
+  let lesEnabled = false;
+  let gpuDrainMs: number | null = null;
+  let gpuProbeInFlight = false;
   let latestCd = 0;
   let latestCl = 0;
   let latestSt: number | null = null;
@@ -149,6 +216,7 @@ async function main(): Promise<void> {
   function applyFlowParams(): void {
     state.u = clampU(state.u);
     tauSolution = solveTauForRe(state.re, state.u, currentD);
+    lesEnabled = state.re >= LES_AUTO_RE;
     writeParams(device, buffers, {
       nx: NX,
       ny: NY,
@@ -159,6 +227,8 @@ async function main(): Promise<void> {
       viewMode: state.viewMode,
       stepIndex: stepCount,
       substeps: currentK,
+      lesEnabled,
+      smagorinskyCs: SMAGORINSKY_CS,
     });
   }
 
@@ -185,6 +255,8 @@ async function main(): Promise<void> {
     // Drop force history so the mean/Strouhal reflect only the new transient.
     chart.clear();
     latestSt = null;
+    nanDetected = false;
+    paused = false;
   }
 
   // Brush edits have no analytic D, so the frontal height is read back from
@@ -271,6 +343,12 @@ async function main(): Promise<void> {
     },
     onSingleStep: () => {
       stepOnce = true;
+    },
+    onResolutionChange: (resolution: LatticeResolution) => {
+      if (resolution === RESOLUTION || !availableResolutions.includes(resolution)) return;
+      const url = new URL(window.location.href);
+      url.searchParams.set('resolution', resolution);
+      window.location.assign(url);
     },
   });
 
@@ -364,31 +442,14 @@ async function main(): Promise<void> {
   let mlups = 0;
   let lastTime = performance.now();
   let lastStatus = 0;
-  // Basic adaptive K (CLAUDE.md: rolling average, adjust to hold 60fps;
-  // the full hysteresis-tuned version is Phase 6). Frame time under vsync
-  // sits pinned at the display period even with the GPU nearly idle, so
-  // "comfortably below target" can never fire on a 60Hz screen -- instead,
-  // grow whenever the frame rate is holding the 60fps budget (small
-  // tolerance for timer jitter) and shrink once frames actually start
-  // missing it. The 30-frame cadence plus the EMA damp the oscillation at
-  // the boundary. (currentK itself is declared with the sim state above --
-  // applyFlowParams packs it into the params uniform.)
-  let frameTimeAvg = TARGET_FRAME_MS;
-  let framesSinceKAdjust = 0;
-
   function frame(now: number): void {
     const dt = Math.max(1, now - lastTime);
     lastTime = now;
     fps = 0.95 * fps + 0.05 * (1000 / dt);
-    frameTimeAvg = 0.9 * frameTimeAvg + 0.1 * dt;
-    framesSinceKAdjust++;
-    if (framesSinceKAdjust > 30) {
-      framesSinceKAdjust = 0;
-      if (frameTimeAvg > TARGET_FRAME_MS * 1.25 && currentK > K_MIN) {
-        currentK--;
-        applyFlowParams(); // substeps lives in the params uniform
-      } else if (frameTimeAvg < TARGET_FRAME_MS * 1.05 && currentK < K_MAX) {
-        currentK++;
+    if (!paused && adaptiveKEnabled) {
+      const adapted = adaptiveK.observe(dt, gpuDrainMs);
+      if (adapted !== null) {
+        currentK = adapted;
         applyFlowParams();
       }
     }
@@ -439,6 +500,8 @@ async function main(): Promise<void> {
     // copying into it, would be a validation error).
     let readbackThisFrame = false;
     const measuredStep = stepCount;
+    const measuredD = currentD;
+    const measuredU = state.u;
     if (frameCounter % FORCE_READBACK_INTERVAL === 0 && !forceReadbackInFlight) {
       const acc = encoder.beginComputePass();
       acc.setPipeline(forces.accumulate);
@@ -452,6 +515,21 @@ async function main(): Promise<void> {
       red.end();
       encoder.copyBufferToBuffer(buffers.forceResult, 0, forceStaging, 0, 8);
       readbackThisFrame = true;
+    }
+
+    // Low-frequency non-finite guard, sharing the force cadence but using an
+    // independent tiny staging buffer. clearBuffer and the sentinel dispatch
+    // are ordered after the solver in this same command buffer.
+    let sentinelThisFrame = false;
+    if (frameCounter % FORCE_READBACK_INTERVAL === 0 && !sentinelReadbackInFlight) {
+      encoder.clearBuffer(buffers.nanFlag);
+      const check = encoder.beginComputePass();
+      check.setPipeline(sentinel.pipeline);
+      check.setBindGroup(0, sentinel.bindGroup);
+      check.dispatchWorkgroups(sentinel.workgroups);
+      check.end();
+      encoder.copyBufferToBuffer(buffers.nanFlag, 0, sentinelStaging, 0, 4);
+      sentinelThisFrame = true;
     }
     frameCounter++;
 
@@ -505,17 +583,52 @@ async function main(): Promise<void> {
           const f = new Float32Array(forceStaging.getMappedRange().slice(0));
           forceStaging.unmap();
           // Cd = 2 Fx / (rho0 U^2 D), Cl = 2 Fy / (...); rho0 = 1.
-          const denom = state.u * state.u * currentD;
+          const denom = measuredU * measuredU * measuredD;
           if (denom > 0) {
             latestCd = (2 * f[0]!) / denom;
             latestCl = (2 * f[1]!) / denom;
             chart.push({ step: measuredStep, cd: latestCd, cl: latestCl });
-            latestSt = chart.strouhal(currentD, state.u);
+            latestSt = chart.strouhal(measuredD, measuredU);
           }
           forceReadbackInFlight = false;
         },
         () => {
           forceReadbackInFlight = false;
+        },
+      );
+    }
+
+    if (sentinelThisFrame) {
+      sentinelReadbackInFlight = true;
+      void sentinelStaging.mapAsync(GPUMapMode.READ).then(
+        () => {
+          const flag = new Uint32Array(sentinelStaging.getMappedRange().slice(0))[0]!;
+          sentinelStaging.unmap();
+          if (flag !== 0) {
+            nanDetected = true;
+            paused = true;
+            console.error('LBM paused: non-finite density detected by GPU sentinel');
+          }
+          sentinelReadbackInFlight = false;
+        },
+        () => {
+          sentinelReadbackInFlight = false;
+        },
+      );
+    }
+
+    // Probe completed queue latency asynchronously. Unlike timing command
+    // encoding, this exposes real GPU backlog to the adaptive-K controller.
+    if (frameCounter % 60 === 0 && !gpuProbeInFlight) {
+      gpuProbeInFlight = true;
+      const probeStart = performance.now();
+      void device.queue.onSubmittedWorkDone().then(
+        () => {
+          gpuDrainMs = performance.now() - probeStart;
+          gpuProbeInFlight = false;
+        },
+        () => {
+          gpuProbeInFlight = false;
         },
       );
     }
@@ -541,6 +654,10 @@ async function main(): Promise<void> {
           cd: avg ? avg.cd : latestCd,
           cl: avg ? avg.cl : latestCl,
           st: latestSt,
+          resolution: RESOLUTION,
+          workgroup: lbm.workgroup.label,
+          lesEnabled,
+          nanDetected,
         }),
       );
     }
@@ -569,7 +686,19 @@ async function main(): Promise<void> {
       __lbm: {
         nx: NX,
         ny: NY,
+        resolution: RESOLUTION,
+        workgroup: lbm.workgroup.label,
+        benchmark: lbmBenchmark.results,
         steps: () => stepCount,
+        stability: () => ({ lesEnabled, nanDetected, gpuDrainMs, paused }),
+        setKForValidation: (k: number) => {
+          adaptiveKEnabled = false;
+          currentK = adaptiveK.set(k);
+          applyFlowParams();
+        },
+        resumeAdaptiveK: () => {
+          adaptiveKEnabled = true;
+        },
         readMoments: async () => ({
           rho: await readField(buffers.rho),
           ux: await readField(buffers.ux),

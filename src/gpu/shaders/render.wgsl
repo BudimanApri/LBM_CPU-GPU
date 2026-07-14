@@ -40,6 +40,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let y = clamp(i32((1.0 - in.uv.y) * f32(ny)), 0, ny - 1);
   let cell = y * nx + x;
 
+  // A non-finite density means the solver has become unstable. Make the
+  // failure unmistakable while the low-frequency sentinel pauses the run.
+  // WGSL has no isFinite(); self-inequality catches NaN and the magnitude
+  // check catches infinities/overflow.
+  let rho_here = rho_in[cell];
+  if (!(rho_here == rho_here) || abs(rho_here) > 1e6) {
+    return vec4f(1.0, 0.0, 1.0, 1.0);
+  }
+
   // Edge-detected obstacle outline: any 4-neighbor on the opposite side of
   // the mask boundary marks this pixel as an edge, drawn over both sides.
   let here = solid_mask[cell];
@@ -75,7 +84,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     return vec4f(diverging(vorticity / (0.5 * u0)), 1.0);
   }
   if (view_mode == 2u) {
-    let dev = rho_in[cell] - 1.0;
+    let dev = rho_here - 1.0;
     // BGK density deviations are O(Ma^2); u0^2 gives a resolution-
     // independent normalization tied to the actual compressibility error.
     return vec4f(diverging(dev / (2.0 * u0 * u0)), 1.0);

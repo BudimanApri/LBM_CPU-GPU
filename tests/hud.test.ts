@@ -13,6 +13,10 @@ const base = {
   cd: 2.014,
   cl: -0.317,
   st: 0.165,
+  resolution: '1024x512',
+  workgroup: '16x8',
+  lesEnabled: false,
+  nanDetected: false,
 };
 
 describe('formatHud', () => {
@@ -21,6 +25,8 @@ describe('formatHud', () => {
     expect(text).toContain('fps    60');
     expect(text).toContain('MLUPS  3191');
     expect(text).toContain('K      2');
+    expect(text).toContain('grid   1024x512  wg 16x8');
+    expect(text).toContain('LES    off');
     expect(text).toContain('Re     100');
     expect(text).toContain('tau    0.5360');
     expect(text).toContain('D      24 cells (cylinder)');
@@ -28,6 +34,12 @@ describe('formatHud', () => {
     expect(text).toContain('Cl     -0.317');
     expect(text).toContain('St     0.165');
     expect(text).toContain('steps  12345');
+  });
+
+  it('reports LES and a non-finite pause prominently', () => {
+    const text = formatHud({ ...base, lesEnabled: true, nanDetected: true });
+    expect(text).toContain('LES    on');
+    expect(text).toContain('ERROR  non-finite density; paused');
   });
 
   it('shows -- for Strouhal when no oscillation is detected yet', () => {

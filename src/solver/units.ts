@@ -64,3 +64,17 @@ export function solveTauForRe(re: number, u: number, d: number): TauSolution {
   const nu = nuFromTau(tau);
   return { tau, nu, reEffective: reynolds(u, d, nu), clamped: tau !== tauRequested };
 }
+
+/** CPU mirror of the local WGSL Smagorinsky relaxation, useful for tests. */
+export function smagorinskyTau(
+  molecularTau: number,
+  cs: number,
+  piNorm: number,
+  rho: number,
+): number {
+  const tauTurb =
+    0.5 *
+    (Math.sqrt(molecularTau * molecularTau + (18 * cs * cs * piNorm) / Math.max(rho, 1e-12)) -
+      molecularTau);
+  return clampTau(molecularTau + tauTurb);
+}

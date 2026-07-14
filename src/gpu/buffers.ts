@@ -24,13 +24,15 @@ export const PARAMS_OFFSETS = {
   flags: 16, // u32
   stepIndex: 20, // u32
   substeps: 24, // u32 -- K, so once-per-frame passes scale advection to match
-  // 28..31: explicit padding to a 16-byte multiple
+  smagorinskyCs: 28, // f32 -- local LES model constant (typically 0.1)
 } as const;
 
 /** Params.flags bit 0: periodic top/bottom walls (otherwise free-slip). */
 export const FLAG_PERIODIC_Y = 1;
 /** Params.flags bit 1: dye advection pass runs and emitters inject. */
 export const FLAG_DYE_ENABLED = 2;
+/** Params.flags bit 2: enable the local Smagorinsky LES relaxation. */
+export const FLAG_LES_ENABLED = 4;
 /** Params.flags bits 4-5: the render view mode (2 bits, 4 values). */
 export const VIEW_MODE_SHIFT = 4;
 export const VIEW_MODE_MASK = 0b11;
@@ -91,6 +93,10 @@ export interface SimParams {
   stepIndex: number;
   /** Solver substeps per rendered frame (K); dye/particles scale by this. */
   substeps: number;
+  /** Local Smagorinsky LES. Defaults off so existing parity fixtures stay BGK. */
+  lesEnabled?: boolean;
+  /** Smagorinsky constant Cs. Defaults to 0.1. */
+  smagorinskyCs?: number;
 }
 
 export function encodeParams(p: SimParams): ArrayBuffer {
@@ -103,10 +109,12 @@ export function encodeParams(p: SimParams): ArrayBuffer {
   const flags =
     (p.periodicY ? FLAG_PERIODIC_Y : 0) |
     (p.dyeEnabled ? FLAG_DYE_ENABLED : 0) |
+    (p.lesEnabled ? FLAG_LES_ENABLED : 0) |
     (VIEW_MODE_CODES[p.viewMode] << VIEW_MODE_SHIFT);
   dv.setUint32(PARAMS_OFFSETS.flags, flags, true);
   dv.setUint32(PARAMS_OFFSETS.stepIndex, p.stepIndex, true);
   dv.setUint32(PARAMS_OFFSETS.substeps, p.substeps, true);
+  dv.setFloat32(PARAMS_OFFSETS.smagorinskyCs, p.smagorinskyCs ?? 0.1, true);
   return buf;
 }
 
@@ -137,6 +145,8 @@ export interface LbmBuffers {
   forcePartials: GPUBuffer;
   /** Reduced total momentum-exchange force (Fx, Fy), one vec2f. */
   forceResult: GPUBuffer;
+  /** Atomic u32 set by the low-frequency non-finite-density sentinel. */
+  nanFlag: GPUBuffer;
   params: GPUBuffer;
   brushParams: GPUBuffer;
 }
@@ -151,7 +161,26 @@ export function forceWorkgroups(nx: number, ny: number): { x: number; y: number 
   return { x: Math.ceil(nx / 8), y: Math.ceil(ny / 8) };
 }
 
+/** Largest single storage binding: one 9-population distribution buffer. */
+export function distributionBufferBytes(nx: number, ny: number): number {
+  return 9 * nx * ny * 4;
+}
+
+/** Guard the rare resolution-reallocation path before creating huge buffers. */
+export function supportsLbmResolution(device: GPUDevice, nx: number, ny: number): boolean {
+  const bytes = distributionBufferBytes(nx, ny);
+  return bytes <= device.limits.maxStorageBufferBindingSize && bytes <= device.limits.maxBufferSize;
+}
+
 export function createLbmBuffers(device: GPUDevice, nx: number, ny: number): LbmBuffers {
+  if (!supportsLbmResolution(device, nx, ny)) {
+    const bytes = distributionBufferBytes(nx, ny);
+    throw new RangeError(
+      `lattice ${nx}x${ny} needs a ${bytes}-byte distribution binding; ` +
+        `device limits are ${device.limits.maxStorageBufferBindingSize} storage / ` +
+        `${device.limits.maxBufferSize} buffer bytes`,
+    );
+  }
   const n = nx * ny;
   const fUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
   const fieldUsage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
@@ -201,6 +230,11 @@ export function createLbmBuffers(device: GPUDevice, nx: number, ny: number): Lbm
       label: 'force-result',
       size: 8, // one vec2<f32> (Fx, Fy)
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    }),
+    nanFlag: device.createBuffer({
+      label: 'nan-sentinel-flag',
+      size: 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     }),
     params: device.createBuffer({
       label: 'params',

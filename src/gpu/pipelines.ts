@@ -4,6 +4,7 @@ import brushSource from './shaders/brush.wgsl?raw';
 import dyeSource from './shaders/dye.wgsl?raw';
 import particlesSource from './shaders/particles.wgsl?raw';
 import forcesSource from './shaders/forces.wgsl?raw';
+import sentinelSource from './shaders/sentinel.wgsl?raw';
 import paramsSource from './shaders/params.wgsl?raw';
 import commonSource from './shaders/common.wgsl?raw';
 import d2q9Constants from './shaders/generated/d2q9-constants.wgsl?raw';
@@ -11,6 +12,7 @@ import { PARTICLE_COUNT, forceWorkgroups, type LbmBuffers } from './buffers.ts';
 
 export interface LbmPipeline {
   pipeline: GPUComputePipeline;
+  module: GPUShaderModule;
   /**
    * Prebuilt ping-pong bind groups (gotcha #8 -- never recreate per frame).
    * bindGroups[step % 2] reads f[step % 2] and writes f[(step + 1) % 2].
@@ -18,17 +20,38 @@ export interface LbmPipeline {
   bindGroups: readonly [GPUBindGroup, GPUBindGroup];
   workgroupsX: number;
   workgroupsY: number;
+  workgroup: LbmWorkgroupConfig;
 }
 
-export function createLbmPipeline(device: GPUDevice, buffers: LbmBuffers): LbmPipeline {
+export interface LbmWorkgroupConfig {
+  label: '8x8' | '16x16' | '16x8';
+  x: 8 | 16;
+  y: 8 | 16;
+}
+
+export const LBM_WORKGROUP_CANDIDATES: readonly LbmWorkgroupConfig[] = [
+  { label: '8x8', x: 8, y: 8 },
+  { label: '16x16', x: 16, y: 16 },
+  { label: '16x8', x: 16, y: 8 },
+];
+
+export function createLbmPipeline(
+  device: GPUDevice,
+  buffers: LbmBuffers,
+  workgroup: LbmWorkgroupConfig = LBM_WORKGROUP_CANDIDATES[0]!,
+): LbmPipeline {
   const module = device.createShaderModule({
-    label: 'lbm-stream-collide',
+    label: `lbm-stream-collide-${workgroup.label}`,
     code: d2q9Constants + '\n' + paramsSource + '\n' + lbmSource,
   });
   const pipeline = device.createComputePipeline({
-    label: 'lbm-stream-collide',
+    label: `lbm-stream-collide-${workgroup.label}`,
     layout: 'auto',
-    compute: { module, entryPoint: 'lbm_step' },
+    compute: {
+      module,
+      entryPoint: 'lbm_step',
+      constants: { WORKGROUP_X: workgroup.x, WORKGROUP_Y: workgroup.y },
+    },
   });
   const layout = pipeline.getBindGroupLayout(0);
   const makeBindGroup = (src: GPUBuffer, dst: GPUBuffer, label: string): GPUBindGroup =>
@@ -47,13 +70,78 @@ export function createLbmPipeline(device: GPUDevice, buffers: LbmBuffers): LbmPi
     });
   return {
     pipeline,
+    module,
     bindGroups: [
       makeBindGroup(buffers.f[0], buffers.f[1], 'lbm-A-to-B'),
       makeBindGroup(buffers.f[1], buffers.f[0], 'lbm-B-to-A'),
     ],
-    workgroupsX: Math.ceil(buffers.nx / 8),
-    workgroupsY: Math.ceil(buffers.ny / 8),
+    workgroupsX: Math.ceil(buffers.nx / workgroup.x),
+    workgroupsY: Math.ceil(buffers.ny / workgroup.y),
+    workgroup,
   };
+}
+
+export interface LbmBenchmarkResult {
+  workgroup: LbmWorkgroupConfig;
+  millisecondsPerStep: number;
+  mlups: number;
+}
+
+export interface LbmBenchmark {
+  selected: LbmPipeline;
+  results: readonly LbmBenchmarkResult[];
+}
+
+/**
+ * Benchmark specialization candidates against completed GPU work. Timing a
+ * dispatch call would only measure command encoding; onSubmittedWorkDone()
+ * includes actual execution. Every batch is even so ping-pong parity returns
+ * to f[0], and main.ts resets the flow after selection.
+ */
+export async function benchmarkLbmWorkgroups(
+  device: GPUDevice,
+  buffers: LbmBuffers,
+  timedSteps = 12,
+): Promise<LbmBenchmark> {
+  const steps = Math.max(2, timedSteps + (timedSteps % 2));
+  const pipelines = LBM_WORKGROUP_CANDIDATES.map((candidate) =>
+    createLbmPipeline(device, buffers, candidate),
+  );
+  const results: LbmBenchmarkResult[] = [];
+
+  await device.queue.onSubmittedWorkDone();
+  for (const candidate of pipelines) {
+    const encodeSteps = (count: number): GPUCommandBuffer => {
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(candidate.pipeline);
+      for (let step = 0; step < count; step++) {
+        pass.setBindGroup(0, candidate.bindGroups[step % 2]);
+        pass.dispatchWorkgroups(candidate.workgroupsX, candidate.workgroupsY);
+      }
+      pass.end();
+      return encoder.finish();
+    };
+
+    device.queue.submit([encodeSteps(2)]);
+    await device.queue.onSubmittedWorkDone();
+    const start = performance.now();
+    device.queue.submit([encodeSteps(steps)]);
+    await device.queue.onSubmittedWorkDone();
+    const elapsed = performance.now() - start;
+    const millisecondsPerStep = elapsed / steps;
+    results.push({
+      workgroup: candidate.workgroup,
+      millisecondsPerStep,
+      mlups: buffers.n / (millisecondsPerStep * 1000),
+    });
+  }
+
+  let winner = 0;
+  for (let i = 1; i < results.length; i++) {
+    if (results[i]!.millisecondsPerStep < results[winner]!.millisecondsPerStep) winner = i;
+  }
+  return { selected: pipelines[winner]!, results };
 }
 
 export interface BrushPipelines {
@@ -319,6 +407,35 @@ export function createForcePipelines(device: GPUDevice, buffers: LbmBuffers): Fo
     workgroupsX: wg.x,
     workgroupsY: wg.y,
   };
+}
+
+export interface SentinelPipeline {
+  pipeline: GPUComputePipeline;
+  bindGroup: GPUBindGroup;
+  module: GPUShaderModule;
+  workgroups: number;
+}
+
+export function createSentinelPipeline(device: GPUDevice, buffers: LbmBuffers): SentinelPipeline {
+  const module = device.createShaderModule({
+    label: 'nan-sentinel',
+    code: paramsSource + '\n' + sentinelSource,
+  });
+  const pipeline = device.createComputePipeline({
+    label: 'nan-sentinel',
+    layout: 'auto',
+    compute: { module, entryPoint: 'nan_sentinel' },
+  });
+  const bindGroup = device.createBindGroup({
+    label: 'nan-sentinel',
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: buffers.params } },
+      { binding: 1, resource: { buffer: buffers.rho } },
+      { binding: 2, resource: { buffer: buffers.nanFlag } },
+    ],
+  });
+  return { pipeline, bindGroup, module, workgroups: Math.ceil(buffers.n / 256) };
 }
 
 export interface RenderPipeline {

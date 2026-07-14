@@ -9,6 +9,7 @@ import {
   nuFromTau,
   reynolds,
   solveTauForRe,
+  smagorinskyTau,
   tauFromNu,
 } from '../src/solver/units.ts';
 
@@ -95,5 +96,16 @@ describe('solveTauForRe', () => {
 describe('reynolds', () => {
   it('computes Re = U D / nu', () => {
     expect(reynolds(0.05, 40, 0.02)).toBeCloseTo(100, 12);
+  });
+});
+
+describe('Smagorinsky relaxation', () => {
+  it('adds no eddy viscosity at equilibrium and grows with stress', () => {
+    expect(smagorinskyTau(0.51, 0.1, 0, 1)).toBeCloseTo(0.51, 15);
+    const lowStress = smagorinskyTau(0.51, 0.1, 0.001, 1);
+    const highStress = smagorinskyTau(0.51, 0.1, 0.1, 1);
+    expect(lowStress).toBeGreaterThan(0.51);
+    expect(highStress).toBeGreaterThan(lowStress);
+    expect(highStress).toBeLessThanOrEqual(TAU_MAX);
   });
 });

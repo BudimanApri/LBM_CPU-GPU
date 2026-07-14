@@ -21,6 +21,12 @@
 
 // The Params struct comes from params.wgsl, concatenated at module creation.
 
+// Pipeline-overridable workgroup dimensions. Phase 6 benchmarks all three
+// candidates against completed GPU work and specializes these constants on
+// the winning pipeline; no shader source rewriting is involved.
+override WORKGROUP_X: u32 = 8u;
+override WORKGROUP_Y: u32 = 8u;
+
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> f_src: array<f32>;
 @group(0) @binding(2) var<storage, read_write> f_dst: array<f32>;
@@ -73,7 +79,7 @@ fn pull_population(i: i32, x: i32, y: i32) -> f32 {
   return f_src[si * n + source];
 }
 
-@compute @workgroup_size(8, 8)
+@compute @workgroup_size(WORKGROUP_X, WORKGROUP_Y)
 fn lbm_step(@builtin(global_invocation_id) gid: vec3<u32>) {
   let nx = i32(params.nx);
   let ny = i32(params.ny);
@@ -156,12 +162,41 @@ fn lbm_step(@builtin(global_invocation_id) gid: vec3<u32>) {
   ux_out[cell] = u;
   uy_out[cell] = v;
 
-  // -- BGK collision (factored equilibrium, gotcha #4) --
-  let omega = 1.0 / params.tau;
+  // -- BGK / Smagorinsky collision (factored equilibrium, gotcha #4) --
+  // LES is local and allocation-free. The non-equilibrium stress tensor is
+  // evaluated from the streamed populations, then the standard LBM
+  // Smagorinsky relaxation raises tau only where unresolved shear demands
+  // eddy viscosity. With LES disabled tau_eff is exactly params.tau, keeping
+  // the Phase-2 CPU/GPU parity path bit-for-bit unchanged.
   let usq = u * u + v * v;
+  var feq = array<f32, 9>();
   for (var i = 0; i < 9; i++) {
     let cu = f32(D2Q9_CX[i]) * u + f32(D2Q9_CY[i]) * v;
-    let feq = D2Q9_W[i] * r * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq);
-    f_dst[i * n + cell] = g[i] - omega * (g[i] - feq);
+    feq[i] = D2Q9_W[i] * r * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq);
+  }
+
+  var tau_eff = params.tau;
+  if ((params.flags & FLAG_LES_ENABLED) != 0u) {
+    var pi_xx = 0.0;
+    var pi_yy = 0.0;
+    var pi_xy = 0.0;
+    for (var i = 0; i < 9; i++) {
+      let cx = f32(D2Q9_CX[i]);
+      let cy = f32(D2Q9_CY[i]);
+      let neq = g[i] - feq[i];
+      pi_xx += cx * cx * neq;
+      pi_yy += cy * cy * neq;
+      pi_xy += cx * cy * neq;
+    }
+    let pi_norm = sqrt(pi_xx * pi_xx + 2.0 * pi_xy * pi_xy + pi_yy * pi_yy);
+    let cs2 = params.smagorinsky_cs * params.smagorinsky_cs;
+    let tau_turb = 0.5 *
+      (sqrt(params.tau * params.tau + 18.0 * cs2 * pi_norm / max(r, 1e-12)) - params.tau);
+    tau_eff = clamp(params.tau + tau_turb, 0.51, 1.5);
+  }
+
+  let omega = 1.0 / tau_eff;
+  for (var i = 0; i < 9; i++) {
+    f_dst[i * n + cell] = g[i] - omega * (g[i] - feq[i]);
   }
 }

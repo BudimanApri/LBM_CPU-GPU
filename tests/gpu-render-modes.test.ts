@@ -199,6 +199,18 @@ describe('render.wgsl view modes (production pipeline, known fields)', () => {
     device.destroy();
   });
 
+  it('paints non-finite density magenta for an unmistakable stability failure', async () => {
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter!.requestDevice();
+    const rho = new Array<number>(NX * NY).fill(1);
+    rho[CELL_Y * NX + CELL_X] = NaN;
+    const pixel = await renderPixel(device, baseParams('density'), { rho }, PX, PY);
+    expect(pixel[0]).toBeGreaterThan(250);
+    expect(pixel[1]).toBeLessThan(5);
+    expect(pixel[2]).toBeGreaterThan(250);
+    device.destroy();
+  });
+
   it('dye mode: dark background blended toward bright by dye intensity', async () => {
     const adapter = await navigator.gpu.requestAdapter();
     const device = await adapter!.requestDevice();

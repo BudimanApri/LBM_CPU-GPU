@@ -68,10 +68,24 @@ Consequences:
   from Cl locks onto the acoustic period and is _not_ reliable at this domain size; the
   Cl-based readout remains in the HUD/chart for qualitative shedding visibility only.
 
-**Recommended follow-up (Phase 6):** a convective / non-reflective outflow BC, or a sponge
+**Recommended future follow-up:** a convective / non-reflective outflow BC, or a sponge
 (absorbing) layer near the outlet, would drain the trapped acoustic energy and make Cl
 directly usable for St. This is a boundary-condition change beyond Phase 5's instrumentation
 scope.
+
+## Phase 6 performance and robustness
+
+Measured on the development machine in headless Chromium with the real WebGPU path. Workgroup timings use `GPUQueue.onSubmittedWorkDone()`; frame performance is sampled from the live HUD.
+
+| Gate                | Configuration                                 |                                           Measured | Result |
+| ------------------- | --------------------------------------------- | -------------------------------------------------: | :----: |
+| Workgroup benchmark | 1024×512; 8×8 vs 16×16 vs 16×8                |                                      16×8 selected |  Pass  |
+| Performance         | 1024×512, K fixed at 3                        |                                   60 fps; 94 MLUPS |  Pass  |
+| Adaptive throughput | 1024×512                                      |                             K=8; 60 fps; 252 MLUPS |  Pass  |
+| High-Re stability   | NACA 4412, AoA 10°, requested Re≈5000, Cs=0.1 |                       LES on; rho 0.990–1.005; max |   u    | 0.073; no sentinel trip | Pass |
+| High resolution     | 2048×1024                                     | allocated; 16×16 selected; K=8; 60 fps; 1006 MLUPS |  Pass  |
+
+The Re=5000 request clamps molecular `tau` to 0.51 and reports the lower laminar effective Re honestly in the HUD. LES supplies additional local eddy relaxation for stability; it does not claim to reproduce a fully resolved Re=5000 direct numerical simulation.
 
 ## Reproduction
 
