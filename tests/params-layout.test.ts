@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BRUSH_PARAMS_BYTE_SIZE,
+  BRUSH_PARAMS_OFFSETS,
   FLAG_PERIODIC_Y,
   PARAMS_BYTE_SIZE,
   PARAMS_OFFSETS,
+  encodeBrushParams,
   encodeParams,
 } from '../src/gpu/buffers.ts';
 
@@ -53,5 +56,42 @@ describe('Params uniform layout', () => {
       encodeParams({ nx: 4, ny: 4, tau: 0.6, inletU: 0.05, periodicY: false, stepIndex: 0 }),
     );
     expect(dv.getUint32(PARAMS_OFFSETS.flags, true)).toBe(0);
+  });
+});
+
+describe('BrushParams uniform layout', () => {
+  it('leading vec2f keeps its 8-byte alignment and the struct is 16-padded', () => {
+    expect(BRUSH_PARAMS_BYTE_SIZE % 16).toBe(0);
+    expect(BRUSH_PARAMS_OFFSETS).toEqual({
+      centerX: 0,
+      centerY: 4,
+      radius: 8,
+      mode: 12,
+      nx: 16,
+      ny: 20,
+    });
+  });
+
+  it('encodeBrushParams writes each field at its offset', () => {
+    const buf = encodeBrushParams({
+      centerX: 100.5,
+      centerY: 60.25,
+      radius: 7,
+      paint: true,
+      nx: 512,
+      ny: 256,
+    });
+    expect(buf.byteLength).toBe(BRUSH_PARAMS_BYTE_SIZE);
+    const dv = new DataView(buf);
+    expect(dv.getFloat32(BRUSH_PARAMS_OFFSETS.centerX, true)).toBe(Math.fround(100.5));
+    expect(dv.getFloat32(BRUSH_PARAMS_OFFSETS.centerY, true)).toBe(Math.fround(60.25));
+    expect(dv.getFloat32(BRUSH_PARAMS_OFFSETS.radius, true)).toBe(7);
+    expect(dv.getUint32(BRUSH_PARAMS_OFFSETS.mode, true)).toBe(1);
+    expect(dv.getUint32(BRUSH_PARAMS_OFFSETS.nx, true)).toBe(512);
+    expect(dv.getUint32(BRUSH_PARAMS_OFFSETS.ny, true)).toBe(256);
+    const erase = new DataView(
+      encodeBrushParams({ centerX: 0, centerY: 0, radius: 1, paint: false, nx: 4, ny: 4 }),
+    );
+    expect(erase.getUint32(BRUSH_PARAMS_OFFSETS.mode, true)).toBe(0);
   });
 });

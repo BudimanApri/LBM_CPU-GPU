@@ -287,21 +287,49 @@ export class CpuLbm {
 
   private applyInletOutflowBCs(): void {
     const { f, mask, nx, ny, n, inletVelocity: u0 } = this;
-    // West (x = 0): Zou-He velocity inlet with prescribed (U, 0). Standard
-    // D2Q9 west-wall reconstruction of the unknowns f1, f5, f8.
+    // West (x = 0): Zou-He velocity inlet with prescribed (U, 0), in the
+    // REGULARIZED form (Latt & Chopard): the standard Zou-He west-wall
+    // density and bounce-back of non-equilibrium supply the unknowns, then
+    // all nine populations are rebuilt as equilibrium plus the
+    // second-order-projected non-equilibrium stress. The projection filters
+    // the grid-scale ghost modes that make the raw three-unknown Zou-He
+    // reconstruction blow up below tau ~ 0.55 -- observed empirically as a
+    // growing standing wave on the inlet column at tau = 0.536 (Re = 100
+    // vortex shedding) before regularization. Preserves the Zou-He density
+    // and momentum exactly: the Q_i projection is mass- and momentum-free.
     for (let y = 0; y < ny; y++) {
       const cell = y * nx;
       if (mask[cell]! !== 0) continue;
-      const f0 = f[cell]!;
-      const f2 = f[2 * n + cell]!;
-      const f3 = f[3 * n + cell]!;
-      const f4 = f[4 * n + cell]!;
-      const f6 = f[6 * n + cell]!;
-      const f7 = f[7 * n + cell]!;
-      const r = (f0 + f2 + f4 + 2 * (f3 + f6 + f7)) / (1 - u0);
-      f[n + cell] = f3 + (2 / 3) * r * u0;
-      f[5 * n + cell] = f7 - 0.5 * (f2 - f4) + (1 / 6) * r * u0;
-      f[8 * n + cell] = f6 + 0.5 * (f2 - f4) + (1 / 6) * r * u0;
+      const known0 = f[cell]!;
+      const known2 = f[2 * n + cell]!;
+      const known3 = f[3 * n + cell]!;
+      const known4 = f[4 * n + cell]!;
+      const known6 = f[6 * n + cell]!;
+      const known7 = f[7 * n + cell]!;
+      const r = (known0 + known2 + known4 + 2 * (known3 + known6 + known7)) / (1 - u0);
+      // Non-equilibrium parts of the knowns; unknowns (1, 5, 8) take the
+      // bounce-back of their opposites' non-equilibrium (Zou-He's rule).
+      // The rest direction's own non-equilibrium never enters the stress
+      // tensor (c_0 = 0) and is discarded by the projection.
+      const neq2 = known2 - equilibrium(2, r, u0, 0);
+      const neq3 = known3 - equilibrium(3, r, u0, 0);
+      const neq4 = known4 - equilibrium(4, r, u0, 0);
+      const neq6 = known6 - equilibrium(6, r, u0, 0);
+      const neq7 = known7 - equilibrium(7, r, u0, 0);
+      const neq1 = neq3;
+      const neq5 = neq7;
+      const neq8 = neq6;
+      // Non-equilibrium stress Pi_ab = sum_i c_ia c_ib f_i^neq.
+      const pxx = neq1 + neq3 + neq5 + neq6 + neq7 + neq8;
+      const pyy = neq2 + neq4 + neq5 + neq6 + neq7 + neq8;
+      const pxy = neq5 - neq6 + neq7 - neq8;
+      // f_i = f_i^eq + w_i (9/2) Q_i : Pi,  Q_i = c_i c_i - (1/3) I.
+      for (let i = 0; i < Q; i++) {
+        const cx = CX[i]!;
+        const cy = CY[i]!;
+        const q = (cx * cx - 1 / 3) * pxx + 2 * cx * cy * pxy + (cy * cy - 1 / 3) * pyy;
+        f[i * n + cell] = equilibrium(i, r, u0, 0) + WEIGHTS[i]! * 4.5 * q;
+      }
     }
     // East (x = nx - 1): zero-gradient outflow -- copy the westward-moving
     // unknowns (f3, f6, f7) from the neighbouring interior column.

@@ -20,14 +20,15 @@ import {
   writeParams,
 } from '../src/gpu/buffers.ts';
 import { createLbmPipeline } from '../src/gpu/pipelines.ts';
-import { rasterizeCircleMask } from './test-utils.ts';
+import { rasterizeCircle } from '../src/geometry/presets.ts';
 
 const NX = 128;
 const NY = 64;
 const TAU = 0.6;
 const U0 = 0.08;
 // Cylinder at 25% chord, vertically centered, D = 16 cells.
-const MASK = rasterizeCircleMask(NX, NY, 32, 32, 8);
+const MASK = new Uint8Array(NX * NY);
+rasterizeCircle(MASK, NX, NY, 32, 32, 8);
 
 async function getDevice(): Promise<GPUDevice> {
   expect(navigator.gpu, 'WebGPU unavailable in the test browser').toBeDefined();

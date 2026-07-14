@@ -1,0 +1,17 @@
+// Shared simulation-params uniform struct, concatenated into every shader
+// module that binds it (WGSL has no #include). Byte layout is mirrored by
+// PARAMS_OFFSETS in src/gpu/buffers.ts and pinned by
+// tests/params-layout.test.ts (gotcha #5) -- extend all three together.
+
+struct Params {
+  nx: u32,
+  ny: u32,
+  tau: f32,
+  inlet_u: f32,
+  flags: u32,      // bit 0: periodic top/bottom walls (else free-slip)
+  step_index: u32, // reserved for dye/particle passes
+  _pad0: u32,
+  _pad1: u32,
+}
+
+const FLAG_PERIODIC_Y: u32 = 1u;

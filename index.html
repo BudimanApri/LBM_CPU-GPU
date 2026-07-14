@@ -7,7 +7,10 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <canvas id="gpu-canvas"></canvas>
+    <div id="stage">
+      <canvas id="gpu-canvas"></canvas>
+    </div>
+    <aside id="panel"></aside>
     <div id="webgpu-fallback" class="hidden">
       <h1>WebGPU is required</h1>
       <p>This wind tunnel needs WebGPU, which your browser doesn't currently expose.</p>

@@ -19,18 +19,7 @@
 // Because BGK collision conserves rho and u, these are exactly the moments
 // of the CPU reference's post-step state -- what the parity gate compares.
 
-struct Params {
-  nx: u32,
-  ny: u32,
-  tau: f32,
-  inlet_u: f32,
-  flags: u32,      // bit 0: periodic top/bottom walls (else free-slip)
-  step_index: u32, // reserved for dye/particle passes
-  _pad0: u32,
-  _pad1: u32,
-}
-
-const FLAG_PERIODIC_Y: u32 = 1u;
+// The Params struct comes from params.wgsl, concatenated at module creation.
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> f_src: array<f32>;
@@ -56,6 +45,12 @@ const FLAG_PERIODIC_Y: u32 = 1u;
 // this is called with: west-edge unknowns (1, 5, 8) are reconstructed by
 // Zou-He instead of pulled, and east-edge unknowns (3, 6, 7) are pulled at
 // column nx-2 by the outflow rule below.
+// Factored equilibrium at the prescribed inlet state (u = (u0, 0)).
+fn inlet_equilibrium(i: i32, rho: f32, u0: f32) -> f32 {
+  let cu = f32(D2Q9_CX[i]) * u0;
+  return D2Q9_W[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u0 * u0);
+}
+
 fn pull_population(i: i32, x: i32, y: i32) -> f32 {
   let nx = i32(params.nx);
   let ny = i32(params.ny);
@@ -108,13 +103,33 @@ fn lbm_step(@builtin(global_invocation_id) gid: vec3<u32>) {
     g[i] = pull_population(i, x, y);
   }
 
-  // -- west edge (x = 0): Zou-He velocity inlet, prescribed (U, 0) --
+  // -- west edge (x = 0): Zou-He velocity inlet, prescribed (U, 0), in the
+  // REGULARIZED form (Latt & Chopard; mirrors the CPU reference exactly).
+  // Zou-He density + bounce-back of non-equilibrium for the unknowns, then
+  // all nine populations are rebuilt as equilibrium plus the second-order
+  // projected non-equilibrium stress. Raw Zou-He is unstable below
+  // tau ~ 0.55 with an unsteady wake (growing standing wave on the inlet
+  // column); the projection filters those ghost modes while preserving the
+  // prescribed density and momentum exactly.
   if (x == 0) {
     let u0 = params.inlet_u;
     let r = (g[0] + g[2] + g[4] + 2.0 * (g[3] + g[6] + g[7])) / (1.0 - u0);
-    g[1] = g[3] + (2.0 / 3.0) * r * u0;
-    g[5] = g[7] - 0.5 * (g[2] - g[4]) + (1.0 / 6.0) * r * u0;
-    g[8] = g[6] + 0.5 * (g[2] - g[4]) + (1.0 / 6.0) * r * u0;
+    var neq = array<f32, 9>();
+    for (var i = 0; i < 9; i++) {
+      neq[i] = g[i] - inlet_equilibrium(i, r, u0);
+    }
+    neq[1] = neq[3];
+    neq[5] = neq[7];
+    neq[8] = neq[6];
+    let pxx = neq[1] + neq[3] + neq[5] + neq[6] + neq[7] + neq[8];
+    let pyy = neq[2] + neq[4] + neq[5] + neq[6] + neq[7] + neq[8];
+    let pxy = neq[5] - neq[6] + neq[7] - neq[8];
+    for (var i = 0; i < 9; i++) {
+      let cx = f32(D2Q9_CX[i]);
+      let cy = f32(D2Q9_CY[i]);
+      let q = (cx * cx - 1.0 / 3.0) * pxx + 2.0 * cx * cy * pxy + (cy * cy - 1.0 / 3.0) * pyy;
+      g[i] = inlet_equilibrium(i, r, u0) + D2Q9_W[i] * 4.5 * q;
+    }
   }
 
   // -- east edge (x = nx-1): zero-gradient outflow --

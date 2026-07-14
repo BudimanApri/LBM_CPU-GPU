@@ -11,7 +11,7 @@ export default defineConfig({
         test: {
           name: 'node',
           include: ['tests/**/*.test.ts'],
-          exclude: ['tests/gpu-parity.test.ts'],
+          exclude: ['tests/gpu-*.test.ts'],
           // The CPU-solver validation tests march thousands of LBM steps to
           // steady state; Vitest workers run them far slower than plain Node.
           testTimeout: 60_000,
@@ -21,7 +21,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'browser',
-          include: ['tests/gpu-parity.test.ts'],
+          include: ['tests/gpu-*.test.ts'],
           testTimeout: 120_000,
           browser: {
             enabled: true,
