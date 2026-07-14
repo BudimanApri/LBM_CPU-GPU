@@ -27,7 +27,8 @@
 //
 // Sign: dp is the momentum the fluid delivers to the solid, so the total is
 // the force ON the obstacle -- +x is drag for west-to-east inflow. The host
-// forms Cd = 2 Fx / (rho0 U^2 D), Cl = 2 Fy / (rho0 U^2 D).
+// forms C = 2 F / (rho0 U^2 Lref), where Lref is airfoil chord or frontal
+// height for the other obstacle types. Normalization stays on the host.
 //
 // Domain-edge walls (free-slip / periodic / inlet / outflow) are NOT counted:
 // only interior cells flagged solid in the mask are obstacles. A link whose

@@ -12,6 +12,8 @@ export interface HudStats {
   tau: number;
   d: number;
   presetLabel: string;
+  coefficientLength: number;
+  coefficientReference: 'frontal' | 'chord';
   steps: number;
   /** Drag coefficient from the latest force readback. */
   cd: number;
@@ -39,6 +41,7 @@ export function formatHud(s: HudStats): string {
     `Re     ${s.re}${eff}`,
     `tau    ${s.tau.toFixed(4)}`,
     `D      ${s.d} cells (${s.presetLabel})`,
+    `Lref   ${s.coefficientLength} cells (${s.coefficientReference})`,
     `Cd     ${s.cd.toFixed(3)}`,
     `Cl     ${s.cl.toFixed(3)}`,
     `St     ${s.st !== null ? s.st.toFixed(3) : '--'}`,

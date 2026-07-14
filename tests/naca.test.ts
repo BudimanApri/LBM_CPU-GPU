@@ -89,8 +89,10 @@ describe('presets', () => {
   it('cylinder mask has ~pi r^2 solid cells centered at 25% chord', () => {
     const nx = 256;
     const ny = 128;
-    const { mask, d } = cylinderPreset(nx, ny, 24);
+    const { mask, d, coefficientLength, coefficientReference } = cylinderPreset(nx, ny, 24);
     expect(d).toBe(24);
+    expect(coefficientLength).toBe(24);
+    expect(coefficientReference).toBe('frontal');
     let count = 0;
     for (const v of mask) count += v;
     expect(count).toBeGreaterThan(Math.PI * 12 * 12 * 0.95);
@@ -106,8 +108,10 @@ describe('presets', () => {
   it('airfoil preset rasterizes a solid, leak-free interior row', () => {
     const nx = 256;
     const ny = 128;
-    const { mask, d } = nacaPreset(nx, ny, '4412', 80, 0);
+    const { mask, d, coefficientLength, coefficientReference } = nacaPreset(nx, ny, '4412', 80, 0);
     expect(d).toBeGreaterThan(6); // 12% of 80 ~ 10 cells thick
+    expect(coefficientLength).toBe(80);
+    expect(coefficientReference).toBe('chord');
     // The row through the thickest section must be contiguous solid
     // (a gap would let flow leak through the airfoil).
     let count = 0;

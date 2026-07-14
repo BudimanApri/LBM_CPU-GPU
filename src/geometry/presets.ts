@@ -1,6 +1,7 @@
 // Obstacle preset rasterizers. Every preset returns a fresh full-domain
-// mask (0 = fluid, 1 = solid) plus the characteristic size D (frontal
-// height in cells) used for the Re <-> tau conversion and, later, Cd/Cl.
+// mask (0 = fluid, 1 = solid), characteristic size D (frontal height), and
+// the reference length used to normalize Cd/Cl. Airfoils use their chord for
+// aerodynamic coefficients; the other presets use frontal height.
 //
 // Placement convention (CLAUDE.md): obstacles sit at ~25% chord of the
 // domain, vertically centered. The vertical center is (ny - 1) / 2 -- a
@@ -16,6 +17,9 @@ export interface PresetResult {
   mask: Uint8Array;
   /** Characteristic obstacle size D: frontal (y) extent in cells. */
   d: number;
+  /** Reference length in cells used in Cd/Cl normalization. */
+  coefficientLength: number;
+  coefficientReference: 'frontal' | 'chord';
 }
 
 /** Rasterize a filled circle into an existing mask. */
@@ -118,7 +122,12 @@ export function cylinderPreset(nx: number, ny: number, diameter: number): Preset
   const { ax, ay } = anchor(nx, ny);
   const mask = new Uint8Array(nx * ny);
   rasterizeCircle(mask, nx, ny, ax, ay, diameter / 2);
-  return { mask, d: diameter };
+  return {
+    mask,
+    d: diameter,
+    coefficientLength: diameter,
+    coefficientReference: 'frontal',
+  };
 }
 
 export function nacaPreset(
@@ -132,7 +141,12 @@ export function nacaPreset(
   const pts = nacaPolygon(digits, chord, alphaDeg).map((p) => ({ x: p.x + ax, y: p.y + ay }));
   const mask = new Uint8Array(nx * ny);
   rasterizePolygon(mask, nx, ny, pts);
-  return { mask, d: polygonFrontalHeight(pts) };
+  return {
+    mask,
+    d: polygonFrontalHeight(pts),
+    coefficientLength: chord,
+    coefficientReference: 'chord',
+  };
 }
 
 const PLATE_THICKNESS = 3;
@@ -150,7 +164,7 @@ export function plateNormalPreset(nx: number, ny: number, height: number): Prese
   ];
   const mask = new Uint8Array(nx * ny);
   rasterizePolygon(mask, nx, ny, pts);
-  return { mask, d: height };
+  return { mask, d: height, coefficientLength: height, coefficientReference: 'frontal' };
 }
 
 /** Flat plate inclined to the flow (rotated thin rectangle). */
@@ -173,7 +187,8 @@ export function plateInclinedPreset(
   const pts = [rot(-l, -t), rot(l, -t), rot(l, t), rot(-l, t)];
   const mask = new Uint8Array(nx * ny);
   rasterizePolygon(mask, nx, ny, pts);
-  return { mask, d: polygonFrontalHeight(pts) };
+  const d = polygonFrontalHeight(pts);
+  return { mask, d, coefficientLength: d, coefficientReference: 'frontal' };
 }
 
 /**
@@ -191,5 +206,5 @@ export function backwardStepPreset(nx: number, ny: number, height: number): Pres
       mask[y * nx + x] = 1;
     }
   }
-  return { mask, d: h };
+  return { mask, d: h, coefficientLength: h, coefficientReference: 'frontal' };
 }

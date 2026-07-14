@@ -25,7 +25,7 @@ Chrome/Edge stable and Safari 18+ expose WebGPU by default on supported hardware
 - **Resolution:** 512×256, 1024×512, or 2048×1024. Unsupported modes are disabled after checking the device's storage-buffer limits. A change reloads the simulation and reallocates all GPU resources once.
 - **Run:** pause, single-step, reset flow, or clear obstacles.
 
-The HUD reports FPS, MLUPS, adaptive solver substeps K, lattice/workgroup size, LES status, Re, relaxation time, frontal height, Cd, Cl, St, and total steps.
+The HUD reports FPS, MLUPS, adaptive solver substeps K, lattice/workgroup size, LES status, Re, relaxation time, frontal height, coefficient reference length, Cd, Cl, St, and total steps.
 
 ## Physics and numerics
 
@@ -75,7 +75,7 @@ The quantitative procedure and caveats are recorded in [VALIDATION.md](VALIDATIO
 | Re≈5000 NACA 4412, AoA 10°, LES | finite; rho 0.990–1.005 |  Pass  |
 | 2048×1024 allocation/run        |  60 fps at adaptive K=8 |  Pass  |
 
-The force coefficients follow the project specification and normalize by **frontal height D** for every obstacle. Conventional airfoil polars instead normalize by chord and generally operate at Re≥50,000. Therefore low-Re airfoil Cd/Cl shown here should not be compared directly with AirfoilTools values without converting the reference length; Phase 6 extends stable runs into the thousands, not the experimental polar regime.
+Force coefficients use `C = 2F/(rho U² Lref)`. For NACA airfoils, **Lref is chord**; cylinders and arbitrary obstacles retain frontal-height normalization. The HUD reports both frontal `D` and `Lref`, so the active convention is explicit. Reynolds numbers in this simulator remain in the low-to-moderate lattice regime and should still not be compared directly with high-Re experimental polar data without matching Reynolds number, blockage, and boundary conditions.
 
 The underlying simple outlet/free-slip conditions reflect weak acoustic modes, so the production app adds absorbing fringes. A direct pressure-pulse A/B test reduced reflected core-density RMS by about 97% (`2.94e-4` → `8.32e-6`). Time-mean Cd remains the primary force metric; the Phase 5 Strouhal gate was independently cross-checked against wake velocity zero crossings.
 

@@ -6,6 +6,7 @@ import {
   U_MIN,
   clampTau,
   clampU,
+  normalizeForce,
   nuFromTau,
   reynolds,
   solveTauForRe,
@@ -96,6 +97,22 @@ describe('solveTauForRe', () => {
 describe('reynolds', () => {
   it('computes Re = U D / nu', () => {
     expect(reynolds(0.05, 40, 0.02)).toBeCloseTo(100, 12);
+  });
+});
+
+describe('force coefficient normalization', () => {
+  it('uses the supplied aerodynamic reference length', () => {
+    const frontal = normalizeForce(1.2, -0.3, 1, 0.05, 20);
+    const chord = normalizeForce(1.2, -0.3, 1, 0.05, 100);
+    expect(frontal.cd).toBeCloseTo(48, 12);
+    expect(frontal.cl).toBeCloseTo(-12, 12);
+    expect(chord.cd).toBeCloseTo(frontal.cd / 5, 12);
+    expect(chord.cl).toBeCloseTo(frontal.cl / 5, 12);
+  });
+
+  it('rejects a nonpositive normalization denominator', () => {
+    expect(() => normalizeForce(1, 1, 1, 0.05, 0)).toThrow(RangeError);
+    expect(() => normalizeForce(1, 1, 1, Number.NaN, 20)).toThrow(RangeError);
   });
 });
 

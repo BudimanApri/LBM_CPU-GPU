@@ -65,6 +65,21 @@ export function solveTauForRe(re: number, u: number, d: number): TauSolution {
   return { tau, nu, reEffective: reynolds(u, d, nu), clamped: tau !== tauRequested };
 }
 
+/** Normalize 2D force per unit span: C = 2F / (rho U^2 Lref). */
+export function normalizeForce(
+  fx: number,
+  fy: number,
+  rho: number,
+  u: number,
+  referenceLength: number,
+): { cd: number; cl: number } {
+  const denominator = rho * u * u * referenceLength;
+  if (!Number.isFinite(denominator) || denominator <= 0) {
+    throw new RangeError('rho, U, and coefficient reference length must form a positive value');
+  }
+  return { cd: (2 * fx) / denominator, cl: (2 * fy) / denominator };
+}
+
 /** CPU mirror of the local WGSL Smagorinsky relaxation, useful for tests. */
 export function smagorinskyTau(
   molecularTau: number,

@@ -30,7 +30,8 @@ frequency, `window.__lbm.readMoments()` (wake velocity).
   the exact, resolution-robust `2 cᵢ fᵢ`. The reduction is verified against the CPU
   reference `momentumExchangeForce()` to < 1e-4 in
   [`tests/gpu-forces.test.ts`](tests/gpu-forces.test.ts).
-- **Coefficients:** `Cd = 2·Fx / (ρ₀ U² D)`, `Cl = 2·Fy / (ρ₀ U² D)`, ρ₀ = 1.
+- **Cylinder coefficients:** `Cd = 2·Fx / (ρ₀ U² D)`, `Cl = 2·Fy / (ρ₀ U² D)`, ρ₀ = 1.
+- **Airfoil coefficients:** the same formula uses chord `c` as `Lref`; frontal `D` remains available for blockage and wake diagnostics.
 - Cd is reported as a **time-mean** over the sample buffer — that is the gate's target, and
   averaging cancels the acoustic ripple described below.
 

@@ -19,7 +19,7 @@ import {
   createSentinelPipeline,
   benchmarkLbmWorkgroups,
 } from './gpu/pipelines.ts';
-import { clampU, solveTauForRe, type TauSolution } from './solver/units.ts';
+import { clampU, normalizeForce, solveTauForRe, type TauSolution } from './solver/units.ts';
 import { AdaptiveKController } from './solver/adaptive-k.ts';
 import { inletRampVelocity } from './solver/inlet-ramp.ts';
 import {
@@ -197,6 +197,8 @@ async function main(): Promise<void> {
   const adaptiveK = new AdaptiveKController(K_MIN, K_MAX, TARGET_FRAME_MS, currentK);
   let adaptiveKEnabled = true;
   let currentD = state.cylinderDiameter;
+  let currentCoefficientLength = currentD;
+  let currentCoefficientReference: PresetResult['coefficientReference'] = 'frontal';
   let obstacleLabel = 'cylinder'; // HUD tag; 'brush' once hand-painted
   let tauSolution: TauSolution = solveTauForRe(state.re, state.u, currentD);
   let inletTargetU = state.u;
@@ -214,6 +216,7 @@ async function main(): Promise<void> {
   let latestCd = 0;
   let latestCl = 0;
   let latestSt: number | null = null;
+  let coefficientGeneration = 0;
   // Debounced mask -> D readback (brush edits only).
   let maskDTimer: number | null = null;
   let maskDReadbackInFlight = false;
@@ -224,14 +227,21 @@ async function main(): Promise<void> {
   const stroke: PointerStroke = { points: [], erase: false };
   let lastStamp: { x: number; y: number } | null = null;
 
+  function clearCoefficientHistory(): void {
+    coefficientGeneration++;
+    chart.clear();
+    latestCd = 0;
+    latestCl = 0;
+    latestSt = null;
+  }
+
   function applyFlowParams(): void {
     state.u = clampU(state.u);
     if (state.u !== inletTargetU) {
       inletRampStartU = currentInletU;
       inletTargetU = state.u;
       inletRampProgress = 0;
-      chart.clear();
-      latestSt = null;
+      clearCoefficientHistory();
     }
     tauSolution = solveTauForRe(state.re, state.u, currentD);
     lesEnabled = state.re >= LES_AUTO_RE;
@@ -291,8 +301,7 @@ async function main(): Promise<void> {
     applyFlowParams();
     writeUniformEquilibrium(device, buffers, (stepCount % 2) as 0 | 1, 1, currentInletU, 0, 0.05);
     // Drop force history so the mean/Strouhal reflect only the new transient.
-    chart.clear();
-    latestSt = null;
+    clearCoefficientHistory();
     nanDetected = false;
     paused = false;
   }
@@ -300,8 +309,8 @@ async function main(): Promise<void> {
   // Brush edits have no analytic D, so the frontal height is read back from
   // the mask. This is an event-triggered readback (not part of the steady
   // 60fps loop, so it respects "no readbacks in the frame loop"), debounced
-  // during a drag and finalized on pointerup. D feeds both the Re->tau solve
-  // and the Cd/Cl normalization, so applyFlowParams runs when it changes.
+  // during a drag and finalized on pointerup. D feeds the Re->tau solve and
+  // becomes the coefficient reference length for arbitrary brush geometry.
   function readbackMaskD(): void {
     if (maskDReadbackInFlight) {
       maskDTimer = window.setTimeout(readbackMaskD, MASK_D_DEBOUNCE_MS);
@@ -322,9 +331,13 @@ async function main(): Promise<void> {
         staging.destroy();
         const d = maskFrontalHeight(mask, NX, NY);
         obstacleLabel = 'brush';
-        if (d > 0 && d !== currentD) {
+        if (d > 0) {
+          const dChanged = d !== currentD;
           currentD = d;
-          applyFlowParams();
+          currentCoefficientLength = d;
+          currentCoefficientReference = 'frontal';
+          clearCoefficientHistory();
+          if (dChanged) applyFlowParams();
         }
         maskDReadbackInFlight = false;
       },
@@ -351,6 +364,8 @@ async function main(): Promise<void> {
   {
     const preset = buildPreset('cylinder');
     currentD = preset.d;
+    currentCoefficientLength = preset.coefficientLength;
+    currentCoefficientReference = preset.coefficientReference;
     writeMask(device, buffers, preset.mask, true);
     applyFlowParams();
     resetFlow();
@@ -371,6 +386,9 @@ async function main(): Promise<void> {
       writeMask(device, buffers, new Uint8Array(NX * NY));
       maskEdited = true;
       obstacleLabel = 'none';
+      currentCoefficientLength = currentD;
+      currentCoefficientReference = 'frontal';
+      clearCoefficientHistory();
     },
     onResetFlow: () => {
       resetFlow();
@@ -495,9 +513,12 @@ async function main(): Promise<void> {
     if (presetDirty) {
       const preset = buildPreset(presetDirty);
       currentD = preset.d;
+      currentCoefficientLength = preset.coefficientLength;
+      currentCoefficientReference = preset.coefficientReference;
       obstacleLabel = presetDirty;
       writeMask(device, buffers, preset.mask);
       applyFlowParams(); // D changed -> tau changes
+      clearCoefficientHistory();
       maskEdited = true;
       presetDirty = null;
     }
@@ -540,6 +561,8 @@ async function main(): Promise<void> {
     let readbackThisFrame = false;
     const measuredStep = stepCount;
     const measuredD = currentD;
+    const measuredCoefficientLength = currentCoefficientLength;
+    const measuredCoefficientGeneration = coefficientGeneration;
     const measuredU = currentInletU;
     if (frameCounter % FORCE_READBACK_INTERVAL === 0 && !forceReadbackInFlight) {
       const acc = encoder.beginComputePass();
@@ -621,11 +644,18 @@ async function main(): Promise<void> {
         () => {
           const f = new Float32Array(forceStaging.getMappedRange().slice(0));
           forceStaging.unmap();
-          // Cd = 2 Fx / (rho0 U^2 D), Cl = 2 Fy / (...); rho0 = 1.
-          const denom = measuredU * measuredU * measuredD;
-          if (denom > 0) {
-            latestCd = (2 * f[0]!) / denom;
-            latestCl = (2 * f[1]!) / denom;
+          // Cd/Cl use the obstacle's aerodynamic reference length: chord for
+          // an airfoil and frontal height for all other geometry. rho0 = 1.
+          if (measuredCoefficientGeneration === coefficientGeneration) {
+            const coefficients = normalizeForce(
+              f[0]!,
+              f[1]!,
+              1,
+              measuredU,
+              measuredCoefficientLength,
+            );
+            latestCd = coefficients.cd;
+            latestCl = coefficients.cl;
             chart.push({ step: measuredStep, cd: latestCd, cl: latestCl });
             latestSt = chart.strouhal(measuredD, measuredU);
           }
@@ -689,6 +719,8 @@ async function main(): Promise<void> {
           tau: tauSolution.tau,
           d: currentD,
           presetLabel: obstacleLabel,
+          coefficientLength: currentCoefficientLength,
+          coefficientReference: currentCoefficientReference,
           steps: stepCount,
           cd: avg ? avg.cd : latestCd,
           cl: avg ? avg.cl : latestCl,
@@ -759,6 +791,8 @@ async function main(): Promise<void> {
           cl: latestCl,
           st: latestSt,
           d: currentD,
+          coefficientLength: currentCoefficientLength,
+          coefficientReference: currentCoefficientReference,
           mean: chart.mean(),
           samples: chart.sampleCount(),
         }),

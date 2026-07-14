@@ -9,6 +9,8 @@ const base = {
   tau: 0.536,
   d: 24,
   presetLabel: 'cylinder',
+  coefficientLength: 24,
+  coefficientReference: 'frontal' as const,
   steps: 12345,
   cd: 2.014,
   cl: -0.317,
@@ -30,10 +32,23 @@ describe('formatHud', () => {
     expect(text).toContain('Re     100');
     expect(text).toContain('tau    0.5360');
     expect(text).toContain('D      24 cells (cylinder)');
+    expect(text).toContain('Lref   24 cells (frontal)');
     expect(text).toContain('Cd     2.014');
     expect(text).toContain('Cl     -0.317');
     expect(text).toContain('St     0.165');
     expect(text).toContain('steps  12345');
+  });
+
+  it('identifies chord normalization for an airfoil', () => {
+    const text = formatHud({
+      ...base,
+      d: 31,
+      presetLabel: 'airfoil',
+      coefficientLength: 194,
+      coefficientReference: 'chord',
+    });
+    expect(text).toContain('D      31 cells (airfoil)');
+    expect(text).toContain('Lref   194 cells (chord)');
   });
 
   it('reports LES and a non-finite pause prominently', () => {
