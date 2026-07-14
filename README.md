@@ -55,6 +55,8 @@ No extra LES buffers or neighbor reads are required. A low-frequency GPU sentine
 - One 2D compute dispatch per LBM substep; workgroup dimensions are WGSL pipeline overrides.
 - Startup benchmark compares 8×8, 16×16, and 16×8 using `queue.onSubmittedWorkDone()` so timing includes completed GPU work rather than command-encoding time.
 - Adaptive K uses both rAF frame time and asynchronously measured queue-drain latency, with hysteresis over 45-frame windows.
+- Reset and inlet-speed changes use a 1200-lattice-step smooth ramp instead of launching an impulsive pressure pulse.
+- Smooth absorbing fringes cover the final 16% of the outlet and outer 8% of free-slip walls. They relax weakly toward undisturbed equilibrium so pressure waves leave without damping the obstacle/wake core; periodic-Y runs disable wall damping.
 - Forces use exact two-stage reduction: workgroup shared sums → per-workgroup partials → one final reduction. Force readback is asynchronous every ten frames.
 - Dye, particles, force reduction, rendering, and stability checks remain GPU-side; no steady-state frame blocks on a readback.
 
@@ -75,16 +77,17 @@ The quantitative procedure and caveats are recorded in [VALIDATION.md](VALIDATIO
 
 The force coefficients follow the project specification and normalize by **frontal height D** for every obstacle. Conventional airfoil polars instead normalize by chord and generally operate at Re≥50,000. Therefore low-Re airfoil Cd/Cl shown here should not be compared directly with AirfoilTools values without converting the reference length; Phase 6 extends stable runs into the thousands, not the experimental polar regime.
 
-The simple outlet also reflects weak acoustic modes. Time-mean Cd is reliable, but raw Cl can contain an acoustic component; the Phase 5 Strouhal gate was cross-checked against wake velocity zero crossings.
+The underlying simple outlet/free-slip conditions reflect weak acoustic modes, so the production app adds absorbing fringes. A direct pressure-pulse A/B test reduced reflected core-density RMS by about 97% (`2.94e-4` → `8.32e-6`). Time-mean Cd remains the primary force metric; the Phase 5 Strouhal gate was independently cross-checked against wake velocity zero crossings.
 
 ## Development commands
 
 ```bash
-npm test                 # 109 CPU + browser/WebGPU tests
+npm test                 # CPU + browser/WebGPU tests
 npm run typecheck
 npm run lint
 npm run build
 npm run validate:phase6  # live FPS, LES, and 2048x1024 browser gate
+npm run validate:acoustics # Re≈7000/U=0.09/AoA=8 boundary-reflection gate
 ```
 
 WGSL constants are generated from `src/solver/constants.ts`, the single source of truth for D2Q9 ordering, weights, opposites, and specular partners.

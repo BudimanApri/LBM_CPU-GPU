@@ -21,6 +21,7 @@ import {
 } from './gpu/pipelines.ts';
 import { clampU, solveTauForRe, type TauSolution } from './solver/units.ts';
 import { AdaptiveKController } from './solver/adaptive-k.ts';
+import { inletRampVelocity } from './solver/inlet-ramp.ts';
 import {
   DEFAULT_RESOLUTION,
   requestedResolution,
@@ -67,6 +68,10 @@ const FORCE_READBACK_INTERVAL = 10;
 const MASK_D_DEBOUNCE_MS = 100;
 const LES_AUTO_RE = 2000;
 const SMAGORINSKY_CS = 0.1;
+const SPONGE_OUTLET_STRENGTH = 0.04;
+const SPONGE_WALL_STRENGTH = 0.02;
+const INLET_RAMP_STEPS = 1200;
+const INLET_RAMP_START_FRACTION = 0.2;
 
 function showFallback(): void {
   document.getElementById('webgpu-fallback')?.classList.remove('hidden');
@@ -126,6 +131,8 @@ async function main(): Promise<void> {
     substeps: K_DEFAULT,
     lesEnabled: false,
     smagorinskyCs: SMAGORINSKY_CS,
+    spongeOutlet: SPONGE_OUTLET_STRENGTH,
+    spongeWall: SPONGE_WALL_STRENGTH,
   });
   writeMask(device, buffers, new Uint8Array(buffers.n), true);
   writeUniformEquilibrium(device, buffers, 0, 1, 0.05, 0);
@@ -192,6 +199,10 @@ async function main(): Promise<void> {
   let currentD = state.cylinderDiameter;
   let obstacleLabel = 'cylinder'; // HUD tag; 'brush' once hand-painted
   let tauSolution: TauSolution = solveTauForRe(state.re, state.u, currentD);
+  let inletTargetU = state.u;
+  let currentInletU = state.u;
+  let inletRampStartU = state.u;
+  let inletRampProgress = INLET_RAMP_STEPS;
   // Force instrumentation state.
   let frameCounter = 0;
   let forceReadbackInFlight = false;
@@ -215,13 +226,20 @@ async function main(): Promise<void> {
 
   function applyFlowParams(): void {
     state.u = clampU(state.u);
+    if (state.u !== inletTargetU) {
+      inletRampStartU = currentInletU;
+      inletTargetU = state.u;
+      inletRampProgress = 0;
+      chart.clear();
+      latestSt = null;
+    }
     tauSolution = solveTauForRe(state.re, state.u, currentD);
     lesEnabled = state.re >= LES_AUTO_RE;
     writeParams(device, buffers, {
       nx: NX,
       ny: NY,
       tau: tauSolution.tau,
-      inletU: state.u,
+      inletU: currentInletU,
       periodicY: state.periodicY,
       dyeEnabled: state.dyeEnabled,
       viewMode: state.viewMode,
@@ -229,7 +247,21 @@ async function main(): Promise<void> {
       substeps: currentK,
       lesEnabled,
       smagorinskyCs: SMAGORINSKY_CS,
+      spongeOutlet: SPONGE_OUTLET_STRENGTH,
+      spongeWall: SPONGE_WALL_STRENGTH,
     });
+  }
+
+  function advanceInletRamp(steps: number): void {
+    if (inletRampProgress >= INLET_RAMP_STEPS || steps <= 0) return;
+    inletRampProgress = Math.min(INLET_RAMP_STEPS, inletRampProgress + steps);
+    currentInletU = inletRampVelocity(
+      inletRampStartU,
+      inletTargetU,
+      inletRampProgress,
+      INLET_RAMP_STEPS,
+    );
+    applyFlowParams();
   }
 
   function buildPreset(kind: PresetKind): PresetResult {
@@ -248,10 +280,16 @@ async function main(): Promise<void> {
   }
 
   function resetFlow(): void {
-    // The 5% transverse seed starts the Karman instability within a couple
-    // of shedding periods instead of waiting for roundoff to break the
-    // symmetric start (see writeUniformEquilibrium).
-    writeUniformEquilibrium(device, buffers, (stepCount % 2) as 0 | 1, 1, state.u, 0, 0.05);
+    // An impulsive start launches a strong pressure pulse into LBM's weakly
+    // compressible domain. Start at 20% of the requested speed and ramp over
+    // lattice steps; the 5% transverse seed still starts the Karman mode
+    // promptly without relying on roundoff.
+    inletTargetU = state.u;
+    inletRampStartU = state.u * INLET_RAMP_START_FRACTION;
+    currentInletU = inletRampStartU;
+    inletRampProgress = 0;
+    applyFlowParams();
+    writeUniformEquilibrium(device, buffers, (stepCount % 2) as 0 | 1, 1, currentInletU, 0, 0.05);
     // Drop force history so the mean/Strouhal reflect only the new transient.
     chart.clear();
     latestSt = null;
@@ -480,6 +518,7 @@ async function main(): Promise<void> {
     const substeps = paused ? (stepOnce ? 1 : 0) : currentK;
     stepOnce = false;
     if (substeps > 0) {
+      advanceInletRamp(substeps);
       const pass = encoder.beginComputePass();
       pass.setPipeline(lbm.pipeline);
       for (let k = 0; k < substeps; k++) {
@@ -501,7 +540,7 @@ async function main(): Promise<void> {
     let readbackThisFrame = false;
     const measuredStep = stepCount;
     const measuredD = currentD;
-    const measuredU = state.u;
+    const measuredU = currentInletU;
     if (frameCounter % FORCE_READBACK_INTERVAL === 0 && !forceReadbackInFlight) {
       const acc = encoder.beginComputePass();
       acc.setPipeline(forces.accumulate);
@@ -690,7 +729,15 @@ async function main(): Promise<void> {
         workgroup: lbm.workgroup.label,
         benchmark: lbmBenchmark.results,
         steps: () => stepCount,
-        stability: () => ({ lesEnabled, nanDetected, gpuDrainMs, paused }),
+        stability: () => ({
+          lesEnabled,
+          nanDetected,
+          gpuDrainMs,
+          paused,
+          currentInletU,
+          inletTargetU,
+          inletRampProgress,
+        }),
         setKForValidation: (k: number) => {
           adaptiveKEnabled = false;
           currentK = adaptiveK.set(k);

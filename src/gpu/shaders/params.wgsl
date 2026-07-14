@@ -14,6 +14,10 @@ struct Params {
                    // particle passes run once per frame and scale their
                    // advection by K to stay synchronized with the flow
   smagorinsky_cs: f32,
+  sponge_outlet: f32,
+  sponge_wall: f32,
+  _pad2: u32,
+  _pad3: u32,
 }
 
 const FLAG_PERIODIC_Y: u32 = 1u;

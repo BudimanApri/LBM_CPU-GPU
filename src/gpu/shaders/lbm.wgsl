@@ -196,7 +196,37 @@ fn lbm_step(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   let omega = 1.0 / tau_eff;
+  // -- absorbing fringe for weakly-compressible pressure waves --
+  // Free-slip walls and the simple zero-gradient outlet reflect acoustic
+  // modes. A smooth, weak relaxation toward the undisturbed inlet
+  // equilibrium absorbs those modes before they reach the boundary. The
+  // outlet fringe occupies the final 16% of the tunnel; wall fringes occupy
+  // the outer 8% and are disabled for periodic-y runs. Strengths default to
+  // zero in parity/validation tests, so the original solver remains exactly
+  // available. The interactive app uses conservative per-step strengths.
+  let xf = (f32(x) + 0.5) / f32(nx);
+  let yf = (f32(y) + 0.5) / f32(ny);
+  let outlet_ramp = smoothstep(0.84, 1.0, xf);
+  let wall_distance = min(yf, 1.0 - yf);
+  var wall_ramp = 1.0 - smoothstep(0.0, 0.08, wall_distance);
+  if ((params.flags & FLAG_PERIODIC_Y) != 0u) {
+    wall_ramp = 0.0;
+  }
+  let sponge = clamp(
+    params.sponge_outlet * outlet_ramp * outlet_ramp +
+      params.sponge_wall * wall_ramp * wall_ramp,
+    0.0,
+    0.2,
+  );
+  let target_usq = params.inlet_u * params.inlet_u;
   for (var i = 0; i < 9; i++) {
-    f_dst[i * n + cell] = g[i] - omega * (g[i] - feq[i]);
+    var post_collision = g[i] - omega * (g[i] - feq[i]);
+    if (sponge > 0.0) {
+      let target_cu = f32(D2Q9_CX[i]) * params.inlet_u;
+      let target_eq = D2Q9_W[i] *
+        (1.0 + 3.0 * target_cu + 4.5 * target_cu * target_cu - 1.5 * target_usq);
+      post_collision = mix(post_collision, target_eq, sponge);
+    }
+    f_dst[i * n + cell] = post_collision;
   }
 }

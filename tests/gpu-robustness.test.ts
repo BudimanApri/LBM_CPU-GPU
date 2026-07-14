@@ -34,6 +34,8 @@ function params(nx: number, ny: number, tau = 0.51) {
     substeps: 3,
     lesEnabled: true,
     smagorinskyCs: 0.1,
+    spongeOutlet: 0.04,
+    spongeWall: 0.02,
   };
 }
 

@@ -32,6 +32,8 @@ describe('Params uniform layout', () => {
       stepIndex: 20,
       substeps: 24,
       smagorinskyCs: 28,
+      spongeOutlet: 32,
+      spongeWall: 36,
     });
   });
 
@@ -48,6 +50,8 @@ describe('Params uniform layout', () => {
       substeps: 5,
       lesEnabled: true,
       smagorinskyCs: 0.12,
+      spongeOutlet: 0.04,
+      spongeWall: 0.015,
     });
     expect(buf.byteLength).toBe(PARAMS_BYTE_SIZE);
     const dv = new DataView(buf);
@@ -63,6 +67,10 @@ describe('Params uniform layout', () => {
     expect(dv.getUint32(PARAMS_OFFSETS.stepIndex, true)).toBe(7);
     expect(dv.getUint32(PARAMS_OFFSETS.substeps, true)).toBe(5);
     expect(dv.getFloat32(PARAMS_OFFSETS.smagorinskyCs, true)).toBeCloseTo(0.12);
+    expect(dv.getFloat32(PARAMS_OFFSETS.spongeOutlet, true)).toBeCloseTo(0.04);
+    expect(dv.getFloat32(PARAMS_OFFSETS.spongeWall, true)).toBeCloseTo(0.015);
+    expect(dv.getUint32(40, true)).toBe(0);
+    expect(dv.getUint32(44, true)).toBe(0);
   });
 
   it('clears the periodic/dye flags for free-slip, dye-off, velocity view', () => {
@@ -81,6 +89,8 @@ describe('Params uniform layout', () => {
     );
     expect(dv.getUint32(PARAMS_OFFSETS.flags, true)).toBe(0);
     expect(dv.getFloat32(PARAMS_OFFSETS.smagorinskyCs, true)).toBeCloseTo(0.1);
+    expect(dv.getFloat32(PARAMS_OFFSETS.spongeOutlet, true)).toBe(0);
+    expect(dv.getFloat32(PARAMS_OFFSETS.spongeWall, true)).toBe(0);
   });
 
   it.each([

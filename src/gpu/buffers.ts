@@ -9,13 +9,13 @@ import { equilibrium } from '../solver/cpu-lbm.ts';
 
 /**
  * Byte layout of the WGSL `Params` uniform struct in lbm.wgsl. The struct is
- * scalars-only (u32/f32, each 4-byte aligned) padded to 32 bytes. This table
+ * scalars-only (u32/f32, each 4-byte aligned) padded to 48 bytes. This table
  * is the TS mirror that tests/params-layout.test.ts verifies byte-for-byte
  * (CLAUDE.md gotcha #5); extend BOTH the WGSL struct and this table in the
  * same commit whenever a field is added, and mind vec2/vec3 alignment rules
  * if vectors ever join the struct.
  */
-export const PARAMS_BYTE_SIZE = 32;
+export const PARAMS_BYTE_SIZE = 48;
 export const PARAMS_OFFSETS = {
   nx: 0, // u32
   ny: 4, // u32
@@ -25,6 +25,9 @@ export const PARAMS_OFFSETS = {
   stepIndex: 20, // u32
   substeps: 24, // u32 -- K, so once-per-frame passes scale advection to match
   smagorinskyCs: 28, // f32 -- local LES model constant (typically 0.1)
+  spongeOutlet: 32, // f32 -- downstream absorbing-fringe strength per step
+  spongeWall: 36, // f32 -- top/bottom absorbing-fringe strength per step
+  // 40..47: explicit padding to a 16-byte multiple
 } as const;
 
 /** Params.flags bit 0: periodic top/bottom walls (otherwise free-slip). */
@@ -97,6 +100,10 @@ export interface SimParams {
   lesEnabled?: boolean;
   /** Smagorinsky constant Cs. Defaults to 0.1. */
   smagorinskyCs?: number;
+  /** Downstream sponge strength per solver step. Defaults off for parity tests. */
+  spongeOutlet?: number;
+  /** Top/bottom sponge strength per solver step. Defaults off for parity tests. */
+  spongeWall?: number;
 }
 
 export function encodeParams(p: SimParams): ArrayBuffer {
@@ -115,6 +122,8 @@ export function encodeParams(p: SimParams): ArrayBuffer {
   dv.setUint32(PARAMS_OFFSETS.stepIndex, p.stepIndex, true);
   dv.setUint32(PARAMS_OFFSETS.substeps, p.substeps, true);
   dv.setFloat32(PARAMS_OFFSETS.smagorinskyCs, p.smagorinskyCs ?? 0.1, true);
+  dv.setFloat32(PARAMS_OFFSETS.spongeOutlet, p.spongeOutlet ?? 0, true);
+  dv.setFloat32(PARAMS_OFFSETS.spongeWall, p.spongeWall ?? 0, true);
   return buf;
 }
 

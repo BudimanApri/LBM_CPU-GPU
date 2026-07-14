@@ -49,7 +49,7 @@ band, which is why the validation cases use D = 24.
 The Re = 20 wake is a steady, symmetric twin-vortex recirculation (Cl = 0.000). The Re = 100
 wake velocity oscillates cleanly and periodically (period 2873 ± 10 steps across nine cycles).
 
-## Finding: the Cl signal is acoustically contaminated
+## Phase 5 finding: the Cl signal was acoustically contaminated
 
 The solver's shedding physics is correct — the **wake transverse velocity** downstream of the
 cylinder gives St in-band. However, the **lift signal Cl** oscillates ~3× faster (period
@@ -68,24 +68,36 @@ Consequences:
   from Cl locks onto the acoustic period and is _not_ reliable at this domain size; the
   Cl-based readout remains in the HUD/chart for qualitative shedding visibility only.
 
-**Recommended future follow-up:** a convective / non-reflective outflow BC, or a sponge
-(absorbing) layer near the outlet, would drain the trapped acoustic energy and make Cl
-directly usable for St. This is a boundary-condition change beyond Phase 5's instrumentation
-scope.
+**Implemented after Phase 6:** smooth outlet and top/bottom absorbing fringes now relax
+non-equilibrium populations toward the undisturbed inlet equilibrium, and inlet changes ramp
+over 1200 lattice steps. A controlled pressure-pulse A/B test measured reflected core-density
+RMS of `2.940e-4` without damping and `8.319e-6` with damping (97.2% reduction).
+
+The reported high-Re airfoil case (requested Re=7079, U=0.09, NACA 4412 at 8°) then ran for
+~21k steps with LES on, no sentinel trip, global rho in [0.9775, 1.0137], and quiet upstream
+far-field density (`std(rho)=0.00146`). The alternating near wake remains physical; the former
+domain-spanning standing bands are suppressed.
 
 ## Phase 6 performance and robustness
 
 Measured on the development machine in headless Chromium with the real WebGPU path. Workgroup timings use `GPUQueue.onSubmittedWorkDone()`; frame performance is sampled from the live HUD.
 
-| Gate                | Configuration                                 |                                           Measured | Result |
-| ------------------- | --------------------------------------------- | -------------------------------------------------: | :----: |
-| Workgroup benchmark | 1024×512; 8×8 vs 16×16 vs 16×8                |                                      16×8 selected |  Pass  |
-| Performance         | 1024×512, K fixed at 3                        |                                   60 fps; 94 MLUPS |  Pass  |
-| Adaptive throughput | 1024×512                                      |                             K=8; 60 fps; 252 MLUPS |  Pass  |
-| High-Re stability   | NACA 4412, AoA 10°, requested Re≈5000, Cs=0.1 |                       LES on; rho 0.990–1.005; max |   u    | 0.073; no sentinel trip | Pass |
-| High resolution     | 2048×1024                                     | allocated; 16×16 selected; K=8; 60 fps; 1006 MLUPS |  Pass  |
+| Gate                | Configuration                                 |                                                   Measured | Result |
+| ------------------- | --------------------------------------------- | ---------------------------------------------------------: | :----: |
+| Workgroup benchmark | 1024×512; 8×8 vs 16×16 vs 16×8                |                                              16×8 selected |  Pass  |
+| Performance         | 1024×512, K fixed at 3                        |                                           60 fps; 94 MLUPS |  Pass  |
+| Adaptive throughput | 1024×512                                      |                                     K=8; 60 fps; 252 MLUPS |  Pass  |
+| High-Re stability   | NACA 4412, AoA 10°, requested Re≈5000, Cs=0.1 | LES on; rho 0.990–1.005; max speed 0.073; no sentinel trip |  Pass  |
+| High resolution     | 2048×1024                                     |         allocated; 16×16 selected; K=8; 60 fps; 1006 MLUPS |  Pass  |
 
 The Re=5000 request clamps molecular `tau` to 0.51 and reports the lower laminar effective Re honestly in the HUD. LES supplies additional local eddy relaxation for stability; it does not claim to reproduce a fully resolved Re=5000 direct numerical simulation.
+
+### Boundary-reflection cleanup
+
+| Gate                           | Configuration                                |                                                   Measured | Result |
+| ------------------------------ | -------------------------------------------- | ---------------------------------------------------------: | :----: |
+| Acoustic pulse absorption      | 256×128, identical pulse with/without sponge |                          reflected RMS 2.940e-4 → 8.319e-6 |  Pass  |
+| Reported airfoil boundary case | Re=7079, U=0.09, NACA 4412, AoA 8°           | 60 fps; rho finite; upstream std 0.00146; no sentinel trip |  Pass  |
 
 ## Reproduction
 
