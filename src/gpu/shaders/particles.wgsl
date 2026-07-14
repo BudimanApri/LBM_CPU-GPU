@@ -40,10 +40,13 @@ fn particles_step(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ny = i32(params.ny);
   let p = particles[i];
 
-  // RK2 (midpoint) integration, one lattice time unit per step.
+  // RK2 (midpoint) integration over dt = K lattice time units: the
+  // particle pass runs once per rendered frame while the solver runs K
+  // substeps, so tracers scale their step to keep pace with the flow.
+  let dt = f32(max(params.substeps, 1u));
   let k1 = sample_velocity(p, nx, ny);
-  let k2 = sample_velocity(p + 0.5 * k1, nx, ny);
-  let next = p + k2;
+  let k2 = sample_velocity(p + 0.5 * dt * k1, nx, ny);
+  let next = p + dt * k2;
 
   let out_of_bounds = next.x < 0.0 || next.x >= f32(nx) || next.y < 0.0 || next.y >= f32(ny);
   var hit_solid = false;

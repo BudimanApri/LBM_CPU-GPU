@@ -29,6 +29,7 @@ describe('Params uniform layout', () => {
       inletU: 12,
       flags: 16,
       stepIndex: 20,
+      substeps: 24,
     });
   });
 
@@ -42,6 +43,7 @@ describe('Params uniform layout', () => {
       dyeEnabled: true,
       viewMode: 'vorticity',
       stepIndex: 7,
+      substeps: 5,
     });
     expect(buf.byteLength).toBe(PARAMS_BYTE_SIZE);
     const dv = new DataView(buf);
@@ -54,8 +56,8 @@ describe('Params uniform layout', () => {
     expect(flags & FLAG_DYE_ENABLED).toBe(FLAG_DYE_ENABLED);
     expect((flags >> VIEW_MODE_SHIFT) & VIEW_MODE_MASK).toBe(1); // vorticity = 1
     expect(dv.getUint32(PARAMS_OFFSETS.stepIndex, true)).toBe(7);
+    expect(dv.getUint32(PARAMS_OFFSETS.substeps, true)).toBe(5);
     // Trailing padding stays zeroed.
-    expect(dv.getUint32(24, true)).toBe(0);
     expect(dv.getUint32(28, true)).toBe(0);
   });
 
@@ -70,6 +72,7 @@ describe('Params uniform layout', () => {
         dyeEnabled: false,
         viewMode: 'velocity',
         stepIndex: 0,
+        substeps: 1,
       }),
     );
     expect(dv.getUint32(PARAMS_OFFSETS.flags, true)).toBe(0);
@@ -91,6 +94,7 @@ describe('Params uniform layout', () => {
         dyeEnabled: false,
         viewMode,
         stepIndex: 0,
+        substeps: 1,
       }),
     );
     const flags = dv.getUint32(PARAMS_OFFSETS.flags, true);

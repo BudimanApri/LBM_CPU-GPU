@@ -33,9 +33,14 @@ fn dye_step(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let src_x = f32(x) - ux_in[cell];
-  let src_y = f32(y) - uy_in[cell];
-  var d = bilinear_sample(&dye_src, nx, ny, src_x, src_y) * DYE_DISSIPATION;
+  // The dye pass runs once per rendered frame while the solver runs K
+  // substeps; the back-trace covers K lattice time units so the smoke
+  // keeps pace with the flow (still well under a cell at K*U <= ~0.8, so
+  // a single semi-Lagrangian trace stays accurate).
+  let k = f32(max(params.substeps, 1u));
+  let src_x = f32(x) - k * ux_in[cell];
+  let src_y = f32(y) - k * uy_in[cell];
+  var d = bilinear_sample(&dye_src, nx, ny, src_x, src_y) * pow(DYE_DISSIPATION, k);
 
   if ((params.flags & FLAG_DYE_ENABLED) != 0u && x == EMITTER_COLUMN) {
     let period = max(1, ny / EMITTER_BANDS);

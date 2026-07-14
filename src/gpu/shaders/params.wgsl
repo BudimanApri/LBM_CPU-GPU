@@ -9,8 +9,10 @@ struct Params {
   tau: f32,
   inlet_u: f32,
   flags: u32,      // bit 0: periodic top/bottom walls (else free-slip)
-  step_index: u32, // reserved for dye/particle passes
-  _pad0: u32,
+  step_index: u32, // hash salt for particle respawn
+  substeps: u32,   // solver steps per rendered frame (K) -- the dye and
+                   // particle passes run once per frame and scale their
+                   // advection by K to stay synchronized with the flow
   _pad1: u32,
 }
 

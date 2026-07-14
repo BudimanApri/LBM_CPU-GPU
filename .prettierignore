@@ -4,3 +4,5 @@ src/gpu/shaders/generated
 *.wgsl
 package-lock.json
 CLAUDE.md
+.claude
+implementation plan.md

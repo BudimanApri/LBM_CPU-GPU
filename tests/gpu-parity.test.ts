@@ -76,6 +76,7 @@ async function runGpu(
     dyeEnabled: false,
     viewMode: 'velocity',
     stepIndex: 0,
+    substeps: 1,
   });
   writeMask(device, buffers, MASK);
   writeDistributions(device, buffers, 0, cpuInitialF);

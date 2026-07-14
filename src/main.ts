@@ -36,8 +36,8 @@ import { formatHud } from './ui/hud.ts';
 const NX = 1024;
 const NY = 512;
 const K_MIN = 1;
-const K_MAX = 6;
-const K_DEFAULT = 2;
+const K_MAX = 8;
+const K_DEFAULT = 3;
 const TARGET_FRAME_MS = 1000 / 60;
 
 const CYLINDER_DIAMETER_DEFAULT = 48;
@@ -105,6 +105,7 @@ async function main(): Promise<void> {
   let dyeStepCount = 0; // parity: dye[dyeStepCount % 2] holds the current state
   let paused = false;
   let stepOnce = false;
+  let currentK = K_DEFAULT; // solver substeps per frame, adapted in frame()
   let currentD = state.cylinderDiameter;
   let lastPreset: PresetKind = 'cylinder';
   let tauSolution: TauSolution = solveTauForRe(state.re, state.u, currentD);
@@ -127,6 +128,7 @@ async function main(): Promise<void> {
       dyeEnabled: state.dyeEnabled,
       viewMode: state.viewMode,
       stepIndex: stepCount,
+      substeps: currentK,
     });
   }
 
@@ -267,10 +269,14 @@ async function main(): Promise<void> {
   let lastTime = performance.now();
   let lastStatus = 0;
   // Basic adaptive K (CLAUDE.md: rolling average, adjust to hold 60fps;
-  // the full hysteresis-tuned version is Phase 6 -- this just needs to
-  // keep K=2 or better at the gate resolution, which the GPU comfortably
-  // has headroom for).
-  let currentK = K_DEFAULT;
+  // the full hysteresis-tuned version is Phase 6). Frame time under vsync
+  // sits pinned at the display period even with the GPU nearly idle, so
+  // "comfortably below target" can never fire on a 60Hz screen -- instead,
+  // grow whenever the frame rate is holding the 60fps budget (small
+  // tolerance for timer jitter) and shrink once frames actually start
+  // missing it. The 30-frame cadence plus the EMA damp the oscillation at
+  // the boundary. (currentK itself is declared with the sim state above --
+  // applyFlowParams packs it into the params uniform.)
   let frameTimeAvg = TARGET_FRAME_MS;
   let framesSinceKAdjust = 0;
 
@@ -282,10 +288,12 @@ async function main(): Promise<void> {
     framesSinceKAdjust++;
     if (framesSinceKAdjust > 30) {
       framesSinceKAdjust = 0;
-      if (frameTimeAvg > TARGET_FRAME_MS * 1.15 && currentK > K_MIN) {
+      if (frameTimeAvg > TARGET_FRAME_MS * 1.25 && currentK > K_MIN) {
         currentK--;
-      } else if (frameTimeAvg < TARGET_FRAME_MS * 0.6 && currentK < K_MAX) {
+        applyFlowParams(); // substeps lives in the params uniform
+      } else if (frameTimeAvg < TARGET_FRAME_MS * 1.05 && currentK < K_MAX) {
         currentK++;
+        applyFlowParams();
       }
     }
 

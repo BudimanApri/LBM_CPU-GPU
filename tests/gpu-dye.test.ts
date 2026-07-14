@@ -13,7 +13,7 @@ async function getDevice(): Promise<GPUDevice> {
   return adapter!.requestDevice();
 }
 
-const baseParams = (dyeEnabled: boolean): SimParams => ({
+const baseParams = (dyeEnabled: boolean, substeps = 1): SimParams => ({
   nx: NX,
   ny: NY,
   tau: 0.6,
@@ -22,6 +22,7 @@ const baseParams = (dyeEnabled: boolean): SimParams => ({
   dyeEnabled,
   viewMode: 'dye',
   stepIndex: 0,
+  substeps,
 });
 
 async function runDyeSteps(
@@ -32,9 +33,10 @@ async function runDyeSteps(
   mask: number[],
   dye0: number[],
   steps: number,
+  substeps = 1,
 ): Promise<Float32Array> {
   const buffers = createLbmBuffers(device, NX, NY);
-  writeParams(device, buffers, baseParams(dyeEnabled));
+  writeParams(device, buffers, baseParams(dyeEnabled, substeps));
   device.queue.writeBuffer(buffers.ux, 0, new Float32Array(ux));
   device.queue.writeBuffer(buffers.uy, 0, new Float32Array(uy));
   device.queue.writeBuffer(buffers.mask, 0, Uint32Array.from(mask));
@@ -100,6 +102,30 @@ describe('dye.wgsl semi-Lagrangian advection', () => {
     expect(result[3 * NX + 5]).toBeCloseTo(0.5 * 0.999, 5);
     // Two cells downstream sees none of the spike yet.
     expect(result[3 * NX + 7]).toBeCloseTo(0, 6);
+    device.destroy();
+  });
+
+  it('scales the back-trace and dissipation by the substep count K', async () => {
+    const device = await getDevice();
+    const ux = new Array<number>(N).fill(0.25); // K=4 -> exactly one cell per dispatch
+    const uy = new Array<number>(N).fill(0);
+    const dye0 = new Array<number>(N).fill(0);
+    dye0[3 * NX + 5] = 1.0;
+    const result = await runDyeSteps(
+      device,
+      false,
+      ux,
+      uy,
+      new Array<number>(N).fill(0),
+      dye0,
+      1,
+      4,
+    );
+    // One cell downstream back-traces 4 * 0.25 = 1.0 cells, landing exactly
+    // on the spike; dissipation compounds once per covered substep.
+    expect(result[3 * NX + 6]).toBeCloseTo(0.999 ** 4, 5);
+    // The spike's own cell back-traces to empty x=4.
+    expect(result[3 * NX + 5]).toBeCloseTo(0, 6);
     device.destroy();
   });
 

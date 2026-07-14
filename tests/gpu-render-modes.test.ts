@@ -139,6 +139,7 @@ const baseParams = (viewMode: SimParams['viewMode']): SimParams => ({
   dyeEnabled: false,
   viewMode,
   stepIndex: 0,
+  substeps: 1,
 });
 
 // uv->cell mapping: uv.x = (px+0.5)/NX -> cell x = px exactly for a render

@@ -63,6 +63,7 @@ describe('Re=20 cylinder long-run stability (Phase 3 gate)', () => {
         dyeEnabled: false,
         viewMode: 'velocity',
         stepIndex: 0,
+        substeps: 1,
       });
       writeMask(device, buffers, mask, true);
       const f = new Float32Array(9 * N);

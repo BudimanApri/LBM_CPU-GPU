@@ -13,7 +13,7 @@ async function getDevice(): Promise<GPUDevice> {
   return adapter!.requestDevice();
 }
 
-const baseParams = (stepIndex = 0): SimParams => ({
+const baseParams = (stepIndex = 0, substeps = 1): SimParams => ({
   nx: NX,
   ny: NY,
   tau: 0.6,
@@ -22,6 +22,7 @@ const baseParams = (stepIndex = 0): SimParams => ({
   dyeEnabled: false,
   viewMode: 'velocity',
   stepIndex,
+  substeps,
 });
 
 async function runParticleSteps(
@@ -31,9 +32,10 @@ async function runParticleSteps(
   mask: number[],
   positions: number[],
   steps: number,
+  substeps = 1,
 ): Promise<Float32Array> {
   const buffers = createLbmBuffers(device, NX, NY);
-  writeParams(device, buffers, baseParams(steps));
+  writeParams(device, buffers, baseParams(steps, substeps));
   device.queue.writeBuffer(buffers.ux, 0, new Float32Array(ux));
   device.queue.writeBuffer(buffers.uy, 0, new Float32Array(uy));
   device.queue.writeBuffer(buffers.mask, 0, Uint32Array.from(mask));
@@ -77,6 +79,25 @@ describe('particles.wgsl RK2 advection', () => {
     );
     expect(result[0]).toBeCloseTo(10 + 3 * 0.2, 5);
     expect(result[1]).toBeCloseTo(6 + 3 * 0.1, 5);
+    device.destroy();
+  });
+
+  it('scales its step by the substep count K to keep pace with the flow', async () => {
+    const device = await getDevice();
+    const ux = new Array<number>(N).fill(0.1);
+    const uy = new Array<number>(N).fill(0);
+    const positions = [10, 8];
+    const result = await runParticleSteps(
+      device,
+      ux,
+      uy,
+      new Array<number>(N).fill(0),
+      positions,
+      1,
+      4, // K = 4 -> one dispatch covers 4 lattice time units
+    );
+    expect(result[0]).toBeCloseTo(10 + 4 * 0.1, 5);
+    expect(result[1]).toBeCloseTo(8, 5);
     device.destroy();
   });
 

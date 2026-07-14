@@ -23,7 +23,8 @@ export const PARAMS_OFFSETS = {
   inletU: 12, // f32
   flags: 16, // u32
   stepIndex: 20, // u32
-  // 24..31: explicit padding to a 16-byte multiple
+  substeps: 24, // u32 -- K, so once-per-frame passes scale advection to match
+  // 28..31: explicit padding to a 16-byte multiple
 } as const;
 
 /** Params.flags bit 0: periodic top/bottom walls (otherwise free-slip). */
@@ -88,6 +89,8 @@ export interface SimParams {
   dyeEnabled: boolean;
   viewMode: ViewMode;
   stepIndex: number;
+  /** Solver substeps per rendered frame (K); dye/particles scale by this. */
+  substeps: number;
 }
 
 export function encodeParams(p: SimParams): ArrayBuffer {
@@ -103,6 +106,7 @@ export function encodeParams(p: SimParams): ArrayBuffer {
     (VIEW_MODE_CODES[p.viewMode] << VIEW_MODE_SHIFT);
   dv.setUint32(PARAMS_OFFSETS.flags, flags, true);
   dv.setUint32(PARAMS_OFFSETS.stepIndex, p.stepIndex, true);
+  dv.setUint32(PARAMS_OFFSETS.substeps, p.substeps, true);
   return buf;
 }
 
