@@ -1,9 +1,12 @@
 import renderSource from './shaders/render.wgsl?raw';
 import lbmSource from './shaders/lbm.wgsl?raw';
 import brushSource from './shaders/brush.wgsl?raw';
+import dyeSource from './shaders/dye.wgsl?raw';
+import particlesSource from './shaders/particles.wgsl?raw';
 import paramsSource from './shaders/params.wgsl?raw';
+import commonSource from './shaders/common.wgsl?raw';
 import d2q9Constants from './shaders/generated/d2q9-constants.wgsl?raw';
-import type { LbmBuffers } from './buffers.ts';
+import { PARTICLE_COUNT, type LbmBuffers } from './buffers.ts';
 
 export interface LbmPipeline {
   pipeline: GPUComputePipeline;
@@ -127,9 +130,136 @@ export function createBrushPipelines(device: GPUDevice, buffers: LbmBuffers): Br
   };
 }
 
+export interface DyePipeline {
+  pipeline: GPUComputePipeline;
+  /** Exposed for tests -- GPUComputePipeline doesn't expose its source module. */
+  module: GPUShaderModule;
+  /** Parity variants: bindGroups[step % 2] reads dye[step % 2], writes dye[(step+1) % 2]. */
+  bindGroups: readonly [GPUBindGroup, GPUBindGroup];
+  workgroupsX: number;
+  workgroupsY: number;
+}
+
+export function createDyePipeline(device: GPUDevice, buffers: LbmBuffers): DyePipeline {
+  const module = device.createShaderModule({
+    label: 'dye',
+    code: commonSource + '\n' + paramsSource + '\n' + dyeSource,
+  });
+  const pipeline = device.createComputePipeline({
+    label: 'dye',
+    layout: 'auto',
+    compute: { module, entryPoint: 'dye_step' },
+  });
+  const layout = pipeline.getBindGroupLayout(0);
+  const makeBindGroup = (src: GPUBuffer, dst: GPUBuffer, label: string): GPUBindGroup =>
+    device.createBindGroup({
+      label,
+      layout,
+      entries: [
+        { binding: 0, resource: { buffer: buffers.params } },
+        { binding: 1, resource: { buffer: buffers.ux } },
+        { binding: 2, resource: { buffer: buffers.uy } },
+        { binding: 3, resource: { buffer: buffers.mask } },
+        { binding: 4, resource: { buffer: src } },
+        { binding: 5, resource: { buffer: dst } },
+      ],
+    });
+  return {
+    pipeline,
+    module,
+    bindGroups: [
+      makeBindGroup(buffers.dye[0], buffers.dye[1], 'dye-A-to-B'),
+      makeBindGroup(buffers.dye[1], buffers.dye[0], 'dye-B-to-A'),
+    ],
+    workgroupsX: Math.ceil(buffers.nx / 8),
+    workgroupsY: Math.ceil(buffers.ny / 8),
+  };
+}
+
+export interface ParticlePipelines {
+  computePipeline: GPUComputePipeline;
+  computeBindGroup: GPUBindGroup;
+  renderPipeline: GPURenderPipeline;
+  renderBindGroup: GPUBindGroup;
+  /** Exposed for tests -- GPU*Pipeline objects don't expose their source module. */
+  module: GPUShaderModule;
+  workgroups: number;
+}
+
+export function createParticlePipelines(
+  device: GPUDevice,
+  buffers: LbmBuffers,
+  format: GPUTextureFormat,
+): ParticlePipelines {
+  const module = device.createShaderModule({
+    label: 'particles',
+    code: commonSource + '\n' + paramsSource + '\n' + particlesSource,
+  });
+  const computePipeline = device.createComputePipeline({
+    label: 'particles-step',
+    layout: 'auto',
+    compute: { module, entryPoint: 'particles_step' },
+  });
+  const computeBindGroup = device.createBindGroup({
+    label: 'particles-step',
+    layout: computePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: buffers.params } },
+      { binding: 1, resource: { buffer: buffers.ux } },
+      { binding: 2, resource: { buffer: buffers.uy } },
+      { binding: 3, resource: { buffer: buffers.mask } },
+      { binding: 4, resource: { buffer: buffers.particles } },
+    ],
+  });
+
+  const renderPipeline = device.createRenderPipeline({
+    label: 'particles-render',
+    layout: 'auto',
+    vertex: { module, entryPoint: 'particles_vs' },
+    fragment: {
+      module,
+      entryPoint: 'particles_fs',
+      targets: [
+        {
+          format,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+          },
+        },
+      ],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+  const renderBindGroup = device.createBindGroup({
+    label: 'particles-render',
+    // layout: 'auto' derives the bind group layout from only the bindings
+    // particles_vs/particles_fs actually reference -- solid_mask (binding
+    // 3) is declared in the module but unused by these entry points, so it
+    // is NOT part of this pipeline's layout; omit it here to match.
+    layout: renderPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: buffers.params } },
+      { binding: 1, resource: { buffer: buffers.ux } },
+      { binding: 2, resource: { buffer: buffers.uy } },
+      { binding: 5, resource: { buffer: buffers.particles } },
+    ],
+  });
+
+  return {
+    computePipeline,
+    computeBindGroup,
+    renderPipeline,
+    renderBindGroup,
+    module,
+    workgroups: Math.ceil(PARTICLE_COUNT / 64),
+  };
+}
+
 export interface RenderPipeline {
   pipeline: GPURenderPipeline;
-  bindGroup: GPUBindGroup;
+  /** Parity variants: bindGroups[dyeIndex] reads buffers.dye[dyeIndex]. */
+  bindGroups: readonly [GPUBindGroup, GPUBindGroup];
 }
 
 export function createRenderPipeline(
@@ -139,7 +269,7 @@ export function createRenderPipeline(
 ): RenderPipeline {
   const module = device.createShaderModule({
     label: 'render',
-    code: paramsSource + '\n' + renderSource,
+    code: commonSource + '\n' + paramsSource + '\n' + renderSource,
   });
   const pipeline = device.createRenderPipeline({
     label: 'render',
@@ -148,15 +278,25 @@ export function createRenderPipeline(
     fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
     primitive: { topology: 'triangle-list' },
   });
-  const bindGroup = device.createBindGroup({
-    label: 'render',
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: buffers.params } },
-      { binding: 1, resource: { buffer: buffers.ux } },
-      { binding: 2, resource: { buffer: buffers.uy } },
-      { binding: 3, resource: { buffer: buffers.mask } },
+  const layout = pipeline.getBindGroupLayout(0);
+  const makeBindGroup = (dye: GPUBuffer, label: string): GPUBindGroup =>
+    device.createBindGroup({
+      label,
+      layout,
+      entries: [
+        { binding: 0, resource: { buffer: buffers.params } },
+        { binding: 1, resource: { buffer: buffers.ux } },
+        { binding: 2, resource: { buffer: buffers.uy } },
+        { binding: 3, resource: { buffer: buffers.rho } },
+        { binding: 4, resource: { buffer: buffers.mask } },
+        { binding: 5, resource: { buffer: dye } },
+      ],
+    });
+  return {
+    pipeline,
+    bindGroups: [
+      makeBindGroup(buffers.dye[0], 'render-dye-A'),
+      makeBindGroup(buffers.dye[1], 'render-dye-B'),
     ],
-  });
-  return { pipeline, bindGroup };
+  };
 }

@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   BRUSH_PARAMS_BYTE_SIZE,
   BRUSH_PARAMS_OFFSETS,
+  FLAG_DYE_ENABLED,
   FLAG_PERIODIC_Y,
   PARAMS_BYTE_SIZE,
   PARAMS_OFFSETS,
+  VIEW_MODE_MASK,
+  VIEW_MODE_SHIFT,
   encodeBrushParams,
   encodeParams,
 } from '../src/gpu/buffers.ts';
@@ -36,6 +39,8 @@ describe('Params uniform layout', () => {
       tau: 0.65,
       inletU: 0.08,
       periodicY: true,
+      dyeEnabled: true,
+      viewMode: 'vorticity',
       stepIndex: 7,
     });
     expect(buf.byteLength).toBe(PARAMS_BYTE_SIZE);
@@ -44,18 +49,52 @@ describe('Params uniform layout', () => {
     expect(dv.getUint32(PARAMS_OFFSETS.ny, true)).toBe(64);
     expect(dv.getFloat32(PARAMS_OFFSETS.tau, true)).toBe(Math.fround(0.65));
     expect(dv.getFloat32(PARAMS_OFFSETS.inletU, true)).toBe(Math.fround(0.08));
-    expect(dv.getUint32(PARAMS_OFFSETS.flags, true)).toBe(FLAG_PERIODIC_Y);
+    const flags = dv.getUint32(PARAMS_OFFSETS.flags, true);
+    expect(flags & FLAG_PERIODIC_Y).toBe(FLAG_PERIODIC_Y);
+    expect(flags & FLAG_DYE_ENABLED).toBe(FLAG_DYE_ENABLED);
+    expect((flags >> VIEW_MODE_SHIFT) & VIEW_MODE_MASK).toBe(1); // vorticity = 1
     expect(dv.getUint32(PARAMS_OFFSETS.stepIndex, true)).toBe(7);
     // Trailing padding stays zeroed.
     expect(dv.getUint32(24, true)).toBe(0);
     expect(dv.getUint32(28, true)).toBe(0);
   });
 
-  it('clears the periodic flag for free-slip walls', () => {
+  it('clears the periodic/dye flags for free-slip, dye-off, velocity view', () => {
     const dv = new DataView(
-      encodeParams({ nx: 4, ny: 4, tau: 0.6, inletU: 0.05, periodicY: false, stepIndex: 0 }),
+      encodeParams({
+        nx: 4,
+        ny: 4,
+        tau: 0.6,
+        inletU: 0.05,
+        periodicY: false,
+        dyeEnabled: false,
+        viewMode: 'velocity',
+        stepIndex: 0,
+      }),
     );
     expect(dv.getUint32(PARAMS_OFFSETS.flags, true)).toBe(0);
+  });
+
+  it.each([
+    ['velocity', 0],
+    ['vorticity', 1],
+    ['density', 2],
+    ['dye', 3],
+  ] as const)('packs view mode %s as code %d', (viewMode, code) => {
+    const dv = new DataView(
+      encodeParams({
+        nx: 4,
+        ny: 4,
+        tau: 0.6,
+        inletU: 0.05,
+        periodicY: false,
+        dyeEnabled: false,
+        viewMode,
+        stepIndex: 0,
+      }),
+    );
+    const flags = dv.getUint32(PARAMS_OFFSETS.flags, true);
+    expect((flags >> VIEW_MODE_SHIFT) & VIEW_MODE_MASK).toBe(code);
   });
 });
 

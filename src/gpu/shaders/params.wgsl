@@ -15,3 +15,6 @@ struct Params {
 }
 
 const FLAG_PERIODIC_Y: u32 = 1u;
+const FLAG_DYE_ENABLED: u32 = 2u;
+const VIEW_MODE_SHIFT: u32 = 4u;
+const VIEW_MODE_MASK: u32 = 3u;

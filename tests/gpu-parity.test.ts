@@ -73,6 +73,8 @@ async function runGpu(
     tau: TAU,
     inletU: U0,
     periodicY: yBoundary === 'periodic',
+    dyeEnabled: false,
+    viewMode: 'velocity',
     stepIndex: 0,
   });
   writeMask(device, buffers, MASK);

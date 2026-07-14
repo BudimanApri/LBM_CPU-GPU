@@ -60,6 +60,8 @@ describe('Re=20 cylinder long-run stability (Phase 3 gate)', () => {
         tau: tauSolution.tau,
         inletU: U0,
         periodicY: false,
+        dyeEnabled: false,
+        viewMode: 'velocity',
         stepIndex: 0,
       });
       writeMask(device, buffers, mask, true);

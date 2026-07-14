@@ -1,14 +1,22 @@
 import './style.css';
 import { initGPU, observeCanvasResize } from './gpu/context.ts';
 import {
+  PARTICLE_COUNT,
   createLbmBuffers,
+  seedParticlesRandom,
   writeBrushParams,
   writeMask,
   writeParams,
   writeUniformEquilibrium,
   type LbmBuffers,
 } from './gpu/buffers.ts';
-import { createBrushPipelines, createLbmPipeline, createRenderPipeline } from './gpu/pipelines.ts';
+import {
+  createBrushPipelines,
+  createDyePipeline,
+  createLbmPipeline,
+  createParticlePipelines,
+  createRenderPipeline,
+} from './gpu/pipelines.ts';
 import { clampU, solveTauForRe, type TauSolution } from './solver/units.ts';
 import {
   backwardStepPreset,
@@ -19,19 +27,25 @@ import {
   type PresetResult,
 } from './geometry/presets.ts';
 import { buildControls, type ControlsState, type PresetKind } from './ui/controls.ts';
+import { formatHud } from './ui/hud.ts';
 
-// Lattice resolution. Fixed for Phase 3; the 512x256 / 1024x512 / 2048x1024
-// selector arrives with the performance work (Phases 4/6). Keep the CSS
-// aspect-ratio of #gpu-canvas in sync (2 / 1).
-const NX = 512;
-const NY = 256;
-/** Solver substeps per rendered frame (adaptive K comes in Phase 4/6). */
-const K_SUBSTEPS = 3;
+// Lattice resolution: 1024x512, matching the Phase 4 gate configuration
+// (60fps at K=2) directly rather than testing it separately. The
+// 512x256/2048x1024 selector arrives with the Phase 6 performance work.
+// Keep the CSS aspect-ratio of #gpu-canvas in sync (2 / 1).
+const NX = 1024;
+const NY = 512;
+const K_MIN = 1;
+const K_MAX = 6;
+const K_DEFAULT = 2;
+const TARGET_FRAME_MS = 1000 / 60;
 
-const PLATE_HEIGHT = 48;
-const PLATE_LENGTH = 64;
+const CYLINDER_DIAMETER_DEFAULT = 48;
+const PLATE_HEIGHT = 96;
+const PLATE_LENGTH = 128;
 const PLATE_ANGLE_DEG = 30;
 const STEP_HEIGHT = Math.round(NY / 3);
+const BRUSH_RADIUS_DEFAULT = 12;
 
 function showFallback(): void {
   document.getElementById('webgpu-fallback')?.classList.remove('hidden');
@@ -65,20 +79,30 @@ async function main(): Promise<void> {
   const buffers: LbmBuffers = createLbmBuffers(device, NX, NY);
   const lbm = createLbmPipeline(device, buffers);
   const brush = createBrushPipelines(device, buffers);
+  const dye = createDyePipeline(device, buffers);
+  const particles = createParticlePipelines(device, buffers, format);
   const render = createRenderPipeline(device, buffers, format);
+  seedParticlesRandom(device, buffers);
 
   // --- simulation state ---
+  // Vorticity is the default view: CLAUDE.md calls it out as "the money
+  // shot for vortex streets," and the Definition of Done wants a visible
+  // vortex street within the first 10 seconds of loading.
   const state: ControlsState = {
     re: 100,
     u: 0.05,
     periodicY: false,
-    brushRadius: 6,
+    brushRadius: BRUSH_RADIUS_DEFAULT,
     brushErase: false,
-    cylinderDiameter: 24,
+    cylinderDiameter: CYLINDER_DIAMETER_DEFAULT,
     nacaDigits: '4412',
     nacaAlphaDeg: 0,
+    viewMode: 'vorticity',
+    dyeEnabled: false,
+    particlesEnabled: true,
   };
   let stepCount = 0; // parity: f[stepCount % 2] holds the current state
+  let dyeStepCount = 0; // parity: dye[dyeStepCount % 2] holds the current state
   let paused = false;
   let stepOnce = false;
   let currentD = state.cylinderDiameter;
@@ -100,7 +124,9 @@ async function main(): Promise<void> {
       tau: tauSolution.tau,
       inletU: state.u,
       periodicY: state.periodicY,
-      stepIndex: 0,
+      dyeEnabled: state.dyeEnabled,
+      viewMode: state.viewMode,
+      stepIndex: stepCount,
     });
   }
 
@@ -120,7 +146,10 @@ async function main(): Promise<void> {
   }
 
   function resetFlow(): void {
-    writeUniformEquilibrium(device, buffers, (stepCount % 2) as 0 | 1, 1, state.u, 0);
+    // The 5% transverse seed starts the Karman instability within a couple
+    // of shedding periods instead of waiting for roundoff to break the
+    // symmetric start (see writeUniformEquilibrium).
+    writeUniformEquilibrium(device, buffers, (stepCount % 2) as 0 | 1, 1, state.u, 0, 0.05);
   }
 
   // --- initial scene: cylinder at Re=100, flow already running ---
@@ -234,12 +263,31 @@ async function main(): Promise<void> {
 
   // --- frame loop ---
   let fps = 60;
+  let mlups = 0;
   let lastTime = performance.now();
   let lastStatus = 0;
+  // Basic adaptive K (CLAUDE.md: rolling average, adjust to hold 60fps;
+  // the full hysteresis-tuned version is Phase 6 -- this just needs to
+  // keep K=2 or better at the gate resolution, which the GPU comfortably
+  // has headroom for).
+  let currentK = K_DEFAULT;
+  let frameTimeAvg = TARGET_FRAME_MS;
+  let framesSinceKAdjust = 0;
 
   function frame(now: number): void {
-    fps = 0.95 * fps + 0.05 * (1000 / Math.max(1, now - lastTime));
+    const dt = Math.max(1, now - lastTime);
     lastTime = now;
+    fps = 0.95 * fps + 0.05 * (1000 / dt);
+    frameTimeAvg = 0.9 * frameTimeAvg + 0.1 * dt;
+    framesSinceKAdjust++;
+    if (framesSinceKAdjust > 30) {
+      framesSinceKAdjust = 0;
+      if (frameTimeAvg > TARGET_FRAME_MS * 1.15 && currentK > K_MIN) {
+        currentK--;
+      } else if (frameTimeAvg < TARGET_FRAME_MS * 0.6 && currentK < K_MAX) {
+        currentK++;
+      }
+    }
 
     if (presetDirty) {
       const preset = buildPreset(presetDirty);
@@ -264,7 +312,7 @@ async function main(): Promise<void> {
       pass.end();
       maskEdited = false;
     }
-    const substeps = paused ? (stepOnce ? 1 : 0) : K_SUBSTEPS;
+    const substeps = paused ? (stepOnce ? 1 : 0) : currentK;
     stepOnce = false;
     if (substeps > 0) {
       const pass = encoder.beginComputePass();
@@ -275,7 +323,26 @@ async function main(): Promise<void> {
         stepCount++;
       }
       pass.end();
+      mlups = 0.9 * mlups + 0.1 * ((buffers.n * substeps) / (dt / 1000) / 1e6);
     }
+    // Dye advects once per rendered frame (a visual smoke effect, not part
+    // of the physics substepping) using the freshest post-step velocity.
+    if (state.dyeEnabled) {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(dye.pipeline);
+      pass.setBindGroup(0, dye.bindGroups[dyeStepCount % 2]);
+      pass.dispatchWorkgroups(dye.workgroupsX, dye.workgroupsY);
+      pass.end();
+      dyeStepCount++;
+    }
+    if (state.particlesEnabled) {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(particles.computePipeline);
+      pass.setBindGroup(0, particles.computeBindGroup);
+      pass.dispatchWorkgroups(particles.workgroups);
+      pass.end();
+    }
+
     const rp = encoder.beginRenderPass({
       colorAttachments: [
         {
@@ -287,20 +354,30 @@ async function main(): Promise<void> {
       ],
     });
     rp.setPipeline(render.pipeline);
-    rp.setBindGroup(0, render.bindGroup);
+    rp.setBindGroup(0, render.bindGroups[dyeStepCount % 2]);
     rp.draw(3);
+    if (state.particlesEnabled) {
+      rp.setPipeline(particles.renderPipeline);
+      rp.setBindGroup(0, particles.renderBindGroup);
+      rp.draw(6, PARTICLE_COUNT);
+    }
     rp.end();
     device.queue.submit([encoder.finish()]);
 
     if (now - lastStatus > 500) {
       lastStatus = now;
-      const eff = tauSolution.clamped ? ` (eff ${tauSolution.reEffective.toFixed(0)})` : '';
       controls.setStatus(
-        `fps    ${fps.toFixed(0)}\n` +
-          `Re     ${state.re}${eff}\n` +
-          `tau    ${tauSolution.tau.toFixed(4)}\n` +
-          `D      ${currentD} cells (${lastPreset})\n` +
-          `steps  ${stepCount}`,
+        formatHud({
+          fps,
+          mlups,
+          kSubsteps: currentK,
+          re: state.re,
+          reEffective: tauSolution.reEffective,
+          tau: tauSolution.tau,
+          d: currentD,
+          presetLabel: lastPreset,
+          steps: stepCount,
+        }),
       );
     }
     requestAnimationFrame(frame);

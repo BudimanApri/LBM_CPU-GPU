@@ -28,6 +28,19 @@ export const PARAMS_OFFSETS = {
 
 /** Params.flags bit 0: periodic top/bottom walls (otherwise free-slip). */
 export const FLAG_PERIODIC_Y = 1;
+/** Params.flags bit 1: dye advection pass runs and emitters inject. */
+export const FLAG_DYE_ENABLED = 2;
+/** Params.flags bits 4-5: the render view mode (2 bits, 4 values). */
+export const VIEW_MODE_SHIFT = 4;
+export const VIEW_MODE_MASK = 0b11;
+
+export type ViewMode = 'velocity' | 'vorticity' | 'density' | 'dye';
+const VIEW_MODE_CODES: Record<ViewMode, number> = {
+  velocity: 0,
+  vorticity: 1,
+  density: 2,
+  dye: 3,
+};
 
 /**
  * Byte layout of the WGSL `BrushParams` uniform in brush.wgsl. The leading
@@ -72,6 +85,8 @@ export interface SimParams {
   tau: number;
   inletU: number;
   periodicY: boolean;
+  dyeEnabled: boolean;
+  viewMode: ViewMode;
   stepIndex: number;
 }
 
@@ -82,10 +97,17 @@ export function encodeParams(p: SimParams): ArrayBuffer {
   dv.setUint32(PARAMS_OFFSETS.ny, p.ny, true);
   dv.setFloat32(PARAMS_OFFSETS.tau, p.tau, true);
   dv.setFloat32(PARAMS_OFFSETS.inletU, p.inletU, true);
-  dv.setUint32(PARAMS_OFFSETS.flags, p.periodicY ? FLAG_PERIODIC_Y : 0, true);
+  const flags =
+    (p.periodicY ? FLAG_PERIODIC_Y : 0) |
+    (p.dyeEnabled ? FLAG_DYE_ENABLED : 0) |
+    (VIEW_MODE_CODES[p.viewMode] << VIEW_MODE_SHIFT);
+  dv.setUint32(PARAMS_OFFSETS.flags, flags, true);
   dv.setUint32(PARAMS_OFFSETS.stepIndex, p.stepIndex, true);
   return buf;
 }
+
+/** Tracer particle count, per CLAUDE.md's "~20k particles" target. */
+export const PARTICLE_COUNT = 20_000;
 
 export interface LbmBuffers {
   nx: number;
@@ -103,6 +125,10 @@ export interface LbmBuffers {
   rho: GPUBuffer;
   ux: GPUBuffer;
   uy: GPUBuffer;
+  /** Dye density ping-pong pair, n f32 each. */
+  dye: readonly [GPUBuffer, GPUBuffer];
+  /** Tracer positions, PARTICLE_COUNT * vec2f (8 bytes each). */
+  particles: GPUBuffer;
   params: GPUBuffer;
   brushParams: GPUBuffer;
 }
@@ -137,6 +163,15 @@ export function createLbmBuffers(device: GPUDevice, nx: number, ny: number): Lbm
     rho: device.createBuffer({ label: 'rho', size: n * 4, usage: fieldUsage }),
     ux: device.createBuffer({ label: 'ux', size: n * 4, usage: fieldUsage }),
     uy: device.createBuffer({ label: 'uy', size: n * 4, usage: fieldUsage }),
+    dye: [
+      device.createBuffer({ label: 'dye-A', size: n * 4, usage: fieldUsage }),
+      device.createBuffer({ label: 'dye-B', size: n * 4, usage: fieldUsage }),
+    ],
+    particles: device.createBuffer({
+      label: 'particles',
+      size: PARTICLE_COUNT * 8,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    }),
     params: device.createBuffer({
       label: 'params',
       size: PARAMS_BYTE_SIZE,
@@ -189,9 +224,32 @@ export function writeDistributions(
 }
 
 /**
+ * Scatter tracer particles uniformly at random across the domain. Particles
+ * seeded inside an obstacle self-correct on the first compute step (their
+ * post-step position is still inside the solid, which the respawn check
+ * already treats as a hit), so the mask doesn't need consulting here.
+ */
+export function seedParticlesRandom(device: GPUDevice, buffers: LbmBuffers): void {
+  const positions = new Float32Array(PARTICLE_COUNT * 2);
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    positions[2 * i] = Math.random() * buffers.nx;
+    positions[2 * i + 1] = Math.random() * buffers.ny;
+  }
+  device.queue.writeBuffer(buffers.particles, 0, positions);
+}
+
+/**
  * Reset the flow: fill f[which] with the equilibrium of a uniform state and
  * write the matching moment fields. The moment buffers must be valid before
  * the first solver step -- both the render pass and mask_reconcile read them.
+ *
+ * `transversePerturbation` (fraction of ux0, typically ~0.05) adds a gentle
+ * sinusoidal uy component that breaks the top-bottom symmetry of the start.
+ * A perfectly symmetric impulsive start only sheds vortices once f32
+ * roundoff amplifies -- tens of thousands of steps -- while a small explicit
+ * seed starts the physical Karman instability within a couple of shedding
+ * periods. The wave is weak and viscously damped; it does not change the
+ * developed flow, only how fast it appears.
  */
 export function writeUniformEquilibrium(
   device: GPUDevice,
@@ -200,15 +258,42 @@ export function writeUniformEquilibrium(
   rho0: number,
   ux0: number,
   uy0: number,
+  transversePerturbation = 0,
 ): void {
-  const { n } = buffers;
+  const { n, nx } = buffers;
   const f = new Float32Array(9 * n);
-  for (let i = 0; i < 9; i++) {
-    f.fill(equilibrium(i, rho0, ux0, uy0), i * n, (i + 1) * n);
+  const uyField = new Float32Array(n);
+  if (transversePerturbation === 0) {
+    for (let i = 0; i < 9; i++) {
+      f.fill(equilibrium(i, rho0, ux0, uy0), i * n, (i + 1) * n);
+    }
+    uyField.fill(uy0);
+  } else {
+    const amp = transversePerturbation * ux0;
+    const waveNumber = (2 * Math.PI) / (nx / 4);
+    // uy varies only with x: precompute one row of per-column equilibria
+    // and stamp it down every row (5000x fewer equilibrium() calls than a
+    // naive per-cell loop at 1024x512).
+    const rowF = new Float32Array(9 * nx);
+    const rowUy = new Float32Array(nx);
+    for (let x = 0; x < nx; x++) {
+      const uy = uy0 + amp * Math.sin(waveNumber * x);
+      rowUy[x] = uy;
+      for (let i = 0; i < 9; i++) {
+        rowF[i * nx + x] = equilibrium(i, rho0, ux0, uy);
+      }
+    }
+    const ny = n / nx;
+    for (let y = 0; y < ny; y++) {
+      for (let i = 0; i < 9; i++) {
+        f.set(rowF.subarray(i * nx, (i + 1) * nx), i * n + y * nx);
+      }
+      uyField.set(rowUy, y * nx);
+    }
   }
   device.queue.writeBuffer(buffers.f[which], 0, f);
+  device.queue.writeBuffer(buffers.uy, 0, uyField);
   const field = new Float32Array(n);
   device.queue.writeBuffer(buffers.rho, 0, field.fill(rho0));
   device.queue.writeBuffer(buffers.ux, 0, field.fill(ux0));
-  device.queue.writeBuffer(buffers.uy, 0, field.fill(uy0));
 }

@@ -1,6 +1,7 @@
 // Thin DOM controls panel -- no framework, no solver knowledge. The panel
 // mutates the shared ControlsState and pokes the handlers; main.ts owns all
 // simulation consequences.
+import type { ViewMode } from '../gpu/buffers.ts';
 
 export type PresetKind = 'cylinder' | 'airfoil' | 'plate-normal' | 'plate-inclined' | 'step';
 
@@ -13,6 +14,9 @@ export interface ControlsState {
   cylinderDiameter: number;
   nacaDigits: string;
   nacaAlphaDeg: number;
+  viewMode: ViewMode;
+  dyeEnabled: boolean;
+  particlesEnabled: boolean;
 }
 
 export interface ControlsHandlers {
@@ -180,6 +184,52 @@ export function buildControls(
     state.brushErase = erase.checked;
   });
   eraseRow.appendChild(erase);
+
+  // -- view --
+  const view = row(root, '');
+  view.className = 'ctl-section';
+  view.textContent = 'VIEW';
+  const viewRow = row(root, 'Mode');
+  const viewSelect = document.createElement('select');
+  const viewOptions: readonly [ViewMode, string][] = [
+    ['velocity', 'velocity'],
+    ['vorticity', 'vorticity'],
+    ['density', 'density'],
+    ['dye', 'dye/smoke'],
+  ];
+  for (const [value, label] of viewOptions) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    viewSelect.appendChild(opt);
+  }
+  viewSelect.value = state.viewMode;
+  viewSelect.addEventListener('change', () => {
+    state.viewMode = viewSelect.value as ViewMode;
+    // View mode and dye flags live in the params uniform -- the GPU only
+    // sees them after a rewrite.
+    handlers.onFlowParamsChange();
+  });
+  viewRow.appendChild(viewSelect);
+
+  const dyeRow = row(root, 'Dye emitters');
+  const dyeToggle = document.createElement('input');
+  dyeToggle.type = 'checkbox';
+  dyeToggle.checked = state.dyeEnabled;
+  dyeToggle.addEventListener('change', () => {
+    state.dyeEnabled = dyeToggle.checked;
+    handlers.onFlowParamsChange();
+  });
+  dyeRow.appendChild(dyeToggle);
+
+  const particlesRow = row(root, 'Particles');
+  const particlesToggle = document.createElement('input');
+  particlesToggle.type = 'checkbox';
+  particlesToggle.checked = state.particlesEnabled;
+  particlesToggle.addEventListener('change', () => {
+    state.particlesEnabled = particlesToggle.checked;
+  });
+  particlesRow.appendChild(particlesToggle);
 
   // -- run control --
   const run = row(root, '');
