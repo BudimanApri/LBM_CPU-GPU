@@ -3,10 +3,11 @@ import lbmSource from './shaders/lbm.wgsl?raw';
 import brushSource from './shaders/brush.wgsl?raw';
 import dyeSource from './shaders/dye.wgsl?raw';
 import particlesSource from './shaders/particles.wgsl?raw';
+import forcesSource from './shaders/forces.wgsl?raw';
 import paramsSource from './shaders/params.wgsl?raw';
 import commonSource from './shaders/common.wgsl?raw';
 import d2q9Constants from './shaders/generated/d2q9-constants.wgsl?raw';
-import { PARTICLE_COUNT, type LbmBuffers } from './buffers.ts';
+import { PARTICLE_COUNT, forceWorkgroups, type LbmBuffers } from './buffers.ts';
 
 export interface LbmPipeline {
   pipeline: GPUComputePipeline;
@@ -253,6 +254,70 @@ export function createParticlePipelines(
     renderBindGroup,
     module,
     workgroups: Math.ceil(PARTICLE_COUNT / 64),
+  };
+}
+
+export interface ForcePipelines {
+  accumulate: GPUComputePipeline;
+  /** Parity variants: accumulateBindGroups[step % 2] reads f[step % 2]. */
+  accumulateBindGroups: readonly [GPUBindGroup, GPUBindGroup];
+  reduce: GPUComputePipeline;
+  reduceBindGroup: GPUBindGroup;
+  /** Exposed for tests -- GPUComputePipeline doesn't expose its source module. */
+  module: GPUShaderModule;
+  /** Stage-1 dispatch dims; forces.wgsl indexes partials by workgroup id. */
+  workgroupsX: number;
+  workgroupsY: number;
+}
+
+export function createForcePipelines(device: GPUDevice, buffers: LbmBuffers): ForcePipelines {
+  const module = device.createShaderModule({
+    label: 'forces',
+    code: d2q9Constants + '\n' + paramsSource + '\n' + forcesSource,
+  });
+  const accumulate = device.createComputePipeline({
+    label: 'forces-accumulate',
+    layout: 'auto',
+    compute: { module, entryPoint: 'forces_accumulate' },
+  });
+  const reduce = device.createComputePipeline({
+    label: 'forces-reduce',
+    layout: 'auto',
+    compute: { module, entryPoint: 'forces_reduce' },
+  });
+  const accLayout = accumulate.getBindGroupLayout(0);
+  const makeAcc = (fbuf: GPUBuffer, label: string): GPUBindGroup =>
+    device.createBindGroup({
+      label,
+      layout: accLayout,
+      entries: [
+        { binding: 0, resource: { buffer: buffers.params } },
+        { binding: 1, resource: { buffer: fbuf } },
+        { binding: 2, resource: { buffer: buffers.mask } },
+        { binding: 3, resource: { buffer: buffers.forcePartials } },
+      ],
+    });
+  // Stage 2 uses only partials + result (auto-layout drops params/f/mask).
+  const reduceBindGroup = device.createBindGroup({
+    label: 'forces-reduce',
+    layout: reduce.getBindGroupLayout(0),
+    entries: [
+      { binding: 3, resource: { buffer: buffers.forcePartials } },
+      { binding: 4, resource: { buffer: buffers.forceResult } },
+    ],
+  });
+  const wg = forceWorkgroups(buffers.nx, buffers.ny);
+  return {
+    accumulate,
+    accumulateBindGroups: [
+      makeAcc(buffers.f[0], 'forces-acc-A'),
+      makeAcc(buffers.f[1], 'forces-acc-B'),
+    ],
+    reduce,
+    reduceBindGroup,
+    module,
+    workgroupsX: wg.x,
+    workgroupsY: wg.y,
   };
 }
 

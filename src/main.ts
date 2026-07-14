@@ -13,6 +13,7 @@ import {
 import {
   createBrushPipelines,
   createDyePipeline,
+  createForcePipelines,
   createLbmPipeline,
   createParticlePipelines,
   createRenderPipeline,
@@ -21,6 +22,7 @@ import { clampU, solveTauForRe, type TauSolution } from './solver/units.ts';
 import {
   backwardStepPreset,
   cylinderPreset,
+  maskFrontalHeight,
   nacaPreset,
   plateInclinedPreset,
   plateNormalPreset,
@@ -28,6 +30,7 @@ import {
 } from './geometry/presets.ts';
 import { buildControls, type ControlsState, type PresetKind } from './ui/controls.ts';
 import { formatHud } from './ui/hud.ts';
+import { createStripChart } from './ui/chart.ts';
 
 // Lattice resolution: 1024x512, matching the Phase 4 gate configuration
 // (60fps at K=2) directly rather than testing it separately. The
@@ -46,6 +49,12 @@ const PLATE_LENGTH = 128;
 const PLATE_ANGLE_DEG = 30;
 const STEP_HEIGHT = Math.round(NY / 3);
 const BRUSH_RADIUS_DEFAULT = 12;
+// Force instrumentation: reduce + async readback every N frames (CLAUDE.md:
+// "async readback every 10 frames", never awaited in the frame loop).
+const FORCE_READBACK_INTERVAL = 10;
+// Debounce for the mask -> D (frontal height) readback during a brush drag;
+// finalized immediately on pointerup. Presets/clear supply D directly.
+const MASK_D_DEBOUNCE_MS = 100;
 
 function showFallback(): void {
   document.getElementById('webgpu-fallback')?.classList.remove('hidden');
@@ -81,8 +90,20 @@ async function main(): Promise<void> {
   const brush = createBrushPipelines(device, buffers);
   const dye = createDyePipeline(device, buffers);
   const particles = createParticlePipelines(device, buffers, format);
+  const forces = createForcePipelines(device, buffers);
   const render = createRenderPipeline(device, buffers, format);
   seedParticlesRandom(device, buffers);
+
+  // Persistent staging buffer for the async force readback (8 bytes: Fx, Fy).
+  const forceStaging = device.createBuffer({
+    label: 'force-staging',
+    size: 8,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+
+  // Cd/Cl strip chart with the live Strouhal readout (the signature
+  // instrument). Appended below the controls panel.
+  const chart = createStripChart();
 
   // --- simulation state ---
   // Vorticity is the default view: CLAUDE.md calls it out as "the money
@@ -107,8 +128,17 @@ async function main(): Promise<void> {
   let stepOnce = false;
   let currentK = K_DEFAULT; // solver substeps per frame, adapted in frame()
   let currentD = state.cylinderDiameter;
-  let lastPreset: PresetKind = 'cylinder';
+  let obstacleLabel = 'cylinder'; // HUD tag; 'brush' once hand-painted
   let tauSolution: TauSolution = solveTauForRe(state.re, state.u, currentD);
+  // Force instrumentation state.
+  let frameCounter = 0;
+  let forceReadbackInFlight = false;
+  let latestCd = 0;
+  let latestCl = 0;
+  let latestSt: number | null = null;
+  // Debounced mask -> D readback (brush edits only).
+  let maskDTimer: number | null = null;
+  let maskDReadbackInFlight = false;
   // rAF-coalesced edit intents (never more than one preset rasterization
   // and one diff/reconcile chain per frame, however fast sliders fire).
   let presetDirty: PresetKind | null = null;
@@ -152,6 +182,59 @@ async function main(): Promise<void> {
     // of shedding periods instead of waiting for roundoff to break the
     // symmetric start (see writeUniformEquilibrium).
     writeUniformEquilibrium(device, buffers, (stepCount % 2) as 0 | 1, 1, state.u, 0, 0.05);
+    // Drop force history so the mean/Strouhal reflect only the new transient.
+    chart.clear();
+    latestSt = null;
+  }
+
+  // Brush edits have no analytic D, so the frontal height is read back from
+  // the mask. This is an event-triggered readback (not part of the steady
+  // 60fps loop, so it respects "no readbacks in the frame loop"), debounced
+  // during a drag and finalized on pointerup. D feeds both the Re->tau solve
+  // and the Cd/Cl normalization, so applyFlowParams runs when it changes.
+  function readbackMaskD(): void {
+    if (maskDReadbackInFlight) {
+      maskDTimer = window.setTimeout(readbackMaskD, MASK_D_DEBOUNCE_MS);
+      return;
+    }
+    maskDReadbackInFlight = true;
+    const staging = device.createBuffer({
+      size: buffers.n * 4,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(buffers.mask, 0, staging, 0, buffers.n * 4);
+    device.queue.submit([encoder.finish()]);
+    void staging.mapAsync(GPUMapMode.READ).then(
+      () => {
+        const mask = new Uint32Array(staging.getMappedRange().slice(0));
+        staging.unmap();
+        staging.destroy();
+        const d = maskFrontalHeight(mask, NX, NY);
+        obstacleLabel = 'brush';
+        if (d > 0 && d !== currentD) {
+          currentD = d;
+          applyFlowParams();
+        }
+        maskDReadbackInFlight = false;
+      },
+      () => {
+        maskDReadbackInFlight = false;
+      },
+    );
+  }
+
+  function scheduleMaskD(): void {
+    if (maskDTimer !== null) clearTimeout(maskDTimer);
+    maskDTimer = window.setTimeout(readbackMaskD, MASK_D_DEBOUNCE_MS);
+  }
+
+  function finalizeMaskD(): void {
+    if (maskDTimer !== null) {
+      clearTimeout(maskDTimer);
+      maskDTimer = null;
+    }
+    readbackMaskD();
   }
 
   // --- initial scene: cylinder at Re=100, flow already running ---
@@ -177,6 +260,7 @@ async function main(): Promise<void> {
     onClearObstacles: () => {
       writeMask(device, buffers, new Uint8Array(NX * NY));
       maskEdited = true;
+      obstacleLabel = 'none';
     },
     onResetFlow: () => {
       resetFlow();
@@ -189,6 +273,13 @@ async function main(): Promise<void> {
       stepOnce = true;
     },
   });
+
+  // Instrument strip: Cd/Cl chart with the live Strouhal readout.
+  const instr = document.createElement('div');
+  instr.className = 'ctl-section';
+  instr.textContent = 'FORCES';
+  panel.appendChild(instr);
+  panel.appendChild(chart.canvas);
 
   // --- pointer -> brush ---
   function toLattice(e: PointerEvent): { x: number; y: number } {
@@ -218,6 +309,9 @@ async function main(): Promise<void> {
   canvas.addEventListener('pointerup', (e) => {
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     lastStamp = null;
+    // Finalize D from the completed stroke (CLAUDE.md: always finalized on
+    // pointerup). Guarded so a click with no stamps still resolves cheaply.
+    finalizeMaskD();
   });
 
   /** Stamp the queued stroke points (one small submit per stamp -- the
@@ -261,6 +355,8 @@ async function main(): Promise<void> {
       device.queue.submit([encoder.finish()]);
       maskEdited = true;
     }
+    // A stamp changed the mask; debounce a D readback during the drag.
+    scheduleMaskD();
   }
 
   // --- frame loop ---
@@ -300,7 +396,7 @@ async function main(): Promise<void> {
     if (presetDirty) {
       const preset = buildPreset(presetDirty);
       currentD = preset.d;
-      lastPreset = presetDirty;
+      obstacleLabel = presetDirty;
       writeMask(device, buffers, preset.mask);
       applyFlowParams(); // D changed -> tau changes
       maskEdited = true;
@@ -333,6 +429,32 @@ async function main(): Promise<void> {
       pass.end();
       mlups = 0.9 * mlups + 0.1 * ((buffers.n * substeps) / (dt / 1000) / 1e6);
     }
+
+    // -- momentum-exchange forces (every N frames, async readback) --
+    // Recorded after the substeps so it reads the freshest post-collision
+    // buffer f[stepCount % 2]. Two separate compute passes: WebGPU
+    // synchronizes storage writes across the pass boundary, so the reduce
+    // pass sees the accumulate pass's partials. The copy+map is only recorded
+    // when no readback is already in flight (mapping a mapped buffer, or
+    // copying into it, would be a validation error).
+    let readbackThisFrame = false;
+    const measuredStep = stepCount;
+    if (frameCounter % FORCE_READBACK_INTERVAL === 0 && !forceReadbackInFlight) {
+      const acc = encoder.beginComputePass();
+      acc.setPipeline(forces.accumulate);
+      acc.setBindGroup(0, forces.accumulateBindGroups[stepCount % 2]);
+      acc.dispatchWorkgroups(forces.workgroupsX, forces.workgroupsY);
+      acc.end();
+      const red = encoder.beginComputePass();
+      red.setPipeline(forces.reduce);
+      red.setBindGroup(0, forces.reduceBindGroup);
+      red.dispatchWorkgroups(1);
+      red.end();
+      encoder.copyBufferToBuffer(buffers.forceResult, 0, forceStaging, 0, 8);
+      readbackThisFrame = true;
+    }
+    frameCounter++;
+
     // Dye advects once per rendered frame (a visual smoke effect, not part
     // of the physics substepping) using the freshest post-step velocity.
     if (state.dyeEnabled) {
@@ -372,8 +494,39 @@ async function main(): Promise<void> {
     rp.end();
     device.queue.submit([encoder.finish()]);
 
+    // Kick off the force readback without awaiting -- the frame loop never
+    // blocks on the GPU (CLAUDE.md's readback discipline). Cd/Cl/St are
+    // updated in the .then() on a later tick; the in-flight flag prevents a
+    // second copy into a buffer that is still mapped.
+    if (readbackThisFrame) {
+      forceReadbackInFlight = true;
+      void forceStaging.mapAsync(GPUMapMode.READ).then(
+        () => {
+          const f = new Float32Array(forceStaging.getMappedRange().slice(0));
+          forceStaging.unmap();
+          // Cd = 2 Fx / (rho0 U^2 D), Cl = 2 Fy / (...); rho0 = 1.
+          const denom = state.u * state.u * currentD;
+          if (denom > 0) {
+            latestCd = (2 * f[0]!) / denom;
+            latestCl = (2 * f[1]!) / denom;
+            chart.push({ step: measuredStep, cd: latestCd, cl: latestCl });
+            latestSt = chart.strouhal(currentD, state.u);
+          }
+          forceReadbackInFlight = false;
+        },
+        () => {
+          forceReadbackInFlight = false;
+        },
+      );
+    }
+
     if (now - lastStatus > 500) {
       lastStatus = now;
+      chart.render();
+      // Report the time-mean coefficients: Cd's target is a mean, and the
+      // average cancels the domain acoustic ripple on the instantaneous
+      // force. Fall back to the latest sample before the buffer fills.
+      const avg = chart.mean();
       controls.setStatus(
         formatHud({
           fps,
@@ -383,8 +536,11 @@ async function main(): Promise<void> {
           reEffective: tauSolution.reEffective,
           tau: tauSolution.tau,
           d: currentD,
-          presetLabel: lastPreset,
+          presetLabel: obstacleLabel,
           steps: stepCount,
+          cd: avg ? avg.cd : latestCd,
+          cl: avg ? avg.cl : latestCl,
+          st: latestSt,
         }),
       );
     }
@@ -418,6 +574,17 @@ async function main(): Promise<void> {
           rho: await readField(buffers.rho),
           ux: await readField(buffers.ux),
           uy: await readField(buffers.uy),
+        }),
+        // Coefficients for scripted validation (VALIDATION.md reads these
+        // from the running app): instantaneous, plus the time-mean and sample
+        // count that back the HUD's Cd/Cl readout.
+        coefficients: () => ({
+          cd: latestCd,
+          cl: latestCl,
+          st: latestSt,
+          d: currentD,
+          mean: chart.mean(),
+          samples: chart.sampleCount(),
         }),
       },
     });

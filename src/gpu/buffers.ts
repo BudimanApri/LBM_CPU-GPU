@@ -133,8 +133,22 @@ export interface LbmBuffers {
   dye: readonly [GPUBuffer, GPUBuffer];
   /** Tracer positions, PARTICLE_COUNT * vec2f (8 bytes each). */
   particles: GPUBuffer;
+  /** One vec2f partial per force-reduction workgroup (stage-1 output). */
+  forcePartials: GPUBuffer;
+  /** Reduced total momentum-exchange force (Fx, Fy), one vec2f. */
+  forceResult: GPUBuffer;
   params: GPUBuffer;
   brushParams: GPUBuffer;
+}
+
+/**
+ * Force-reduction workgroup grid: one thread per cell in 8x8 tiles, matching
+ * forces.wgsl's @workgroup_size. Stage 1 emits one partial per workgroup, so
+ * this also sizes the partials buffer. Kept here so the host allocation and
+ * the shader's num_workgroups indexing can never disagree.
+ */
+export function forceWorkgroups(nx: number, ny: number): { x: number; y: number } {
+  return { x: Math.ceil(nx / 8), y: Math.ceil(ny / 8) };
 }
 
 export function createLbmBuffers(device: GPUDevice, nx: number, ny: number): LbmBuffers {
@@ -151,8 +165,10 @@ export function createLbmBuffers(device: GPUDevice, nx: number, ny: number): Lbm
     ],
     mask: device.createBuffer({
       label: 'obstacle-mask',
+      // COPY_SRC so the debounced D (frontal height) readback on brush edits
+      // can snapshot the mask (Phase 5); presets/clear supply D CPU-side.
       size: n * 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     }),
     maskPrev: device.createBuffer({
       label: 'obstacle-mask-prev',
@@ -175,6 +191,16 @@ export function createLbmBuffers(device: GPUDevice, nx: number, ny: number): Lbm
       label: 'particles',
       size: PARTICLE_COUNT * 8,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    }),
+    forcePartials: device.createBuffer({
+      label: 'force-partials',
+      size: forceWorkgroups(nx, ny).x * forceWorkgroups(nx, ny).y * 8, // vec2f
+      usage: GPUBufferUsage.STORAGE,
+    }),
+    forceResult: device.createBuffer({
+      label: 'force-result',
+      size: 8, // one vec2<f32> (Fx, Fy)
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     }),
     params: device.createBuffer({
       label: 'params',

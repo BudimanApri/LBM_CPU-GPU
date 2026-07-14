@@ -46,6 +46,47 @@ export function equilibrium(i: number, rho: number, ux: number, uy: number): num
   return WEIGHTS[i]! * rho * (1 + 3 * cu + 4.5 * cu * cu - 1.5 * (ux * ux + uy * uy));
 }
 
+/**
+ * Momentum-exchange force on the obstacle (CLAUDE.md Forces). For each
+ * fluid->solid link the momentum crossing it is `c_i (f_i + f_ibar)`; with
+ * halfway bounce-back the reflected population arriving back at the fluid node
+ * equals the post-collision `f_i` sent toward the wall, so the sum is the
+ * exact, resolution-robust `2 c_i f_i`. `f` must therefore hold POST-COLLISION
+ * populations (what the GPU stores) for the result to be physical -- passing a
+ * post-stream buffer gives a different, wrong number. Only interior cells
+ * flagged solid in `mask` count; domain-edge walls do not. Returns the force
+ * ON the solid, so drag is +x for west-to-east inflow. This is the CPU ground
+ * truth the GPU two-stage reduction (forces.wgsl) is checked against; both
+ * read the same buffer, so the comparison isolates the reduction from any
+ * accumulation-order differences. Accumulated in f64 regardless of input type.
+ */
+export function momentumExchangeForce(
+  f: ArrayLike<number>,
+  mask: ArrayLike<number>,
+  nx: number,
+  ny: number,
+): { fx: number; fy: number } {
+  const n = nx * ny;
+  let fx = 0;
+  let fy = 0;
+  for (let y = 0; y < ny; y++) {
+    for (let x = 0; x < nx; x++) {
+      const cell = y * nx + x;
+      if (mask[cell] !== 0) continue;
+      for (let i = 1; i < Q; i++) {
+        const sx = x + CX[i]!;
+        const sy = y + CY[i]!;
+        if (sx < 0 || sx >= nx || sy < 0 || sy >= ny) continue;
+        if (mask[sy * nx + sx] === 0) continue;
+        const w = 2 * f[i * n + cell]!;
+        fx += CX[i]! * w;
+        fy += CY[i]! * w;
+      }
+    }
+  }
+  return { fx, fy };
+}
+
 export class CpuLbm {
   readonly nx: number;
   readonly ny: number;

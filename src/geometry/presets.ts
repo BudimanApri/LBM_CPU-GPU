@@ -83,6 +83,27 @@ function anchor(nx: number, ny: number): { ax: number; ay: number } {
   return { ax: Math.round(0.25 * nx), ay: (ny - 1) / 2 };
 }
 
+/**
+ * Frontal height D of an arbitrary mask: the y-extent of its solid bounding
+ * box (CLAUDE.md's "bounding box column-height"). Used to recompute D after
+ * brush edits, where no analytic D is available. Returns 0 for an empty mask.
+ */
+export function maskFrontalHeight(mask: ArrayLike<number>, nx: number, ny: number): number {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let y = 0; y < ny; y++) {
+    const row = y * nx;
+    for (let x = 0; x < nx; x++) {
+      if (mask[row + x] !== 0) {
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        break; // one solid in the row is enough to bound it
+      }
+    }
+  }
+  return maxY < minY ? 0 : maxY - minY + 1;
+}
+
 function polygonFrontalHeight(pts: readonly Point[]): number {
   let minY = Infinity;
   let maxY = -Infinity;

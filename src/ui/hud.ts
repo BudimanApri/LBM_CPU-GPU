@@ -13,6 +13,12 @@ export interface HudStats {
   d: number;
   presetLabel: string;
   steps: number;
+  /** Drag coefficient from the latest force readback. */
+  cd: number;
+  /** Lift coefficient from the latest force readback. */
+  cl: number;
+  /** Strouhal number once a stable Cl oscillation is detected, else null. */
+  st: number | null;
 }
 
 export function formatHud(s: HudStats): string {
@@ -27,6 +33,9 @@ export function formatHud(s: HudStats): string {
     `Re     ${s.re}${eff}`,
     `tau    ${s.tau.toFixed(4)}`,
     `D      ${s.d} cells (${s.presetLabel})`,
+    `Cd     ${s.cd.toFixed(3)}`,
+    `Cl     ${s.cl.toFixed(3)}`,
+    `St     ${s.st !== null ? s.st.toFixed(3) : '--'}`,
     `steps  ${s.steps}`,
   ].join('\n');
 }
