@@ -139,12 +139,12 @@ Use the following procedure for a reproducible low-Reynolds-number airfoil compa
 
 Current manual 2048x1024 NACA 0012 results at 0 degrees are:
 
-| Chord Reynolds number | Measured mean Cd | Note                                               |
-| --------------------: | ---------------: | -------------------------------------------------- |
-|   approximately 1,000 |      0.122-0.123 | chord normalized, converged over a 7-minute run    |
-|                 2,000 |            0.088 | chord-normalized                                   |
-|                 5,000 |            0.055 | chord-normalized                                   |
-|  approximately 10,400 |            0.040 | `Re_D=1259`, `U=0.09`, `tau` approximately 0.51008 |
+| Chord Reynolds number | Measured mean Cd | Validation Cd | Note                                                |
+| --------------------: | ---------------: | ------------: | --------------------------------------------------- |
+|   approximately 1,000 |      0.122       |     0.119     |  chord normalized, converged over a 7-minute run    |
+|                 2,000 |      0.088       |     0.084     |  chord-normalized                                   |
+|                 5,000 |      0.055       |     0.052     |  chord-normalized                                   |
+|  approximately 10,400 |      0.040       |     0.037     |  `Re_D=1259`, `U=0.09`, `tau` approximately 0.51008 |
 
 The primary reference is Di Ilio et al., ["Fluid flow around NACA 0012 airfoil at low-Reynolds numbers with hybrid lattice Boltzmann method"](https://doi.org/10.1016/j.compfluid.2018.02.014), _Computers & Fluids_ 166 (2018), 200-208; an [open arXiv copy](https://arxiv.org/abs/2006.10487) is available. It studies two-dimensional NACA 0012 flow, includes a grid-convergence assessment, and reports zero-angle cases through `Re_c = 10000`. Values read from plotted curves should be treated as approximate unless the underlying numerical data are digitized.
 
