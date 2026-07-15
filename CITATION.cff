@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software or its validation cases, please cite it using this metadata."
+title: "WebGPU LBM Wind Tunnel"
+type: software
+authors:
+  - family-names: "Utomo"
+    given-names: "Budiman Apri"
+    email: "budimanapriu999@gmail.com"
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/BudimanApri/LBM_CPU-GPU"
+url: "https://github.com/BudimanApri/LBM_CPU-GPU"
+keywords:
+  - lattice Boltzmann method
+  - WebGPU
+  - computational fluid dynamics
+  - D2Q9
+  - wind tunnel
+  - fluid simulation

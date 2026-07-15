@@ -1,0 +1,5 @@
+case_id,geometry,aoa_deg,nx,ny,chord_cells,frontal_cells,u,re_d_requested,re_d_effective,re_c_effective,tau,metric,value_min,value_max,measurement_type,run_duration_minutes,reference,notes
+naca0012_rec1000,NACA0012,0,2048,1024,389,47,0.05,126,126,1042.85,0.55595,mean_cd,0.122,0.123,manual_hud_mean,7,doi:10.1016/j.compfluid.2018.02.014,"converged HUD range; chord-normalized"
+naca0012_rec2000,NACA0012,0,2048,1024,389,47,,,,2000,,mean_cd,0.088,0.088,manual_hud_mean,,doi:10.1016/j.compfluid.2018.02.014,"parameters not fully recorded; chord-normalized"
+naca0012_rec5000,NACA0012,0,2048,1024,389,47,,,,5000,,mean_cd,0.055,0.055,manual_hud_mean,,doi:10.1016/j.compfluid.2018.02.014,"parameters not fully recorded; chord-normalized"
+naca0012_rec10420,NACA0012,0,2048,1024,389,47,0.09,1259,1259,10420,0.51008,mean_cd,0.040,0.040,manual_hud_mean,,doi:10.1016/j.compfluid.2018.02.014,"near tau minimum; chord-normalized"

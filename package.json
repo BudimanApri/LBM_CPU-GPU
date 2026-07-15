@@ -2,6 +2,18 @@
   "name": "lbm-wind-tunnel",
   "private": true,
   "version": "0.1.0",
+  "author": {
+    "name": "Budiman Apri Utomo",
+    "email": "budimanapriu999@gmail.com",
+    "url": "https://www.linkedin.com/in/budimanapri/"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BudimanApri/LBM_CPU-GPU.git"
+  },
+  "homepage": "https://github.com/BudimanApri/LBM_CPU-GPU#readme",
+  "bugs": "https://github.com/BudimanApri/LBM_CPU-GPU/issues",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
